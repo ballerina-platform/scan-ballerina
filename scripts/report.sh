@@ -108,6 +108,7 @@ if [ "$(trim "${ANNOTATIONS:-false}")" = "true" ] && [ -n "$WORK" ] && [ -f "$WO
   MEDIUM_SLOTS=$ANNOTATION_LIMIT
   LOW_SLOTS=$ANNOTATION_LIMIT
   { [ "$RESULT" = failed ] || [ "$RESULT" = error ]; } && HIGH_SLOTS=$((HIGH_SLOTS - ${#REASONS[@]}))
+  [ "$HIGH_SLOTS" -ge 0 ] || HIGH_SLOTS=0
   if [ "$HIGH" -gt "$HIGH_SLOTS" ] || [ "$MEDIUM" -gt "$MEDIUM_SLOTS" ] || [ "$LOW" -gt "$LOW_SLOTS" ]; then
     MEDIUM_SLOTS=$((MEDIUM_SLOTS - 1))
     min() { echo $(($1 < $2 ? $1 : $2)); }
@@ -123,9 +124,16 @@ if [ "$(trim "${ANNOTATIONS:-false}")" = "true" ] && [ -n "$WORK" ] && [ -f "$WO
           ({"high": "error", "medium": "warning", "low": "notice"}[.severity]),
           .file, (.line | tostring), ((."end-line" // .line) | tostring), .rule, .message
         ]
+      # Empty fields are written as "-", since read joins consecutive tabs.
+      | map(if . == "" then "-" else . end)
       | @tsv' "$WORK/findings.json" \
     | while IFS=$'\t' read -r level file line end_line rule message; do
-        echo "::$level file=$(escape_property "$file"),line=$line,endLine=$end_line,title=$(escape_property "$rule")::$(escape_data "$message")"
+        [ "$file" != - ] || file=""
+        [ "$rule" != - ] || rule=""
+        [ "$message" != - ] || message=""
+        props="title=$(escape_property "$rule")"
+        [ -z "$file" ] || props="file=$(escape_property "$file"),line=$line,endLine=$end_line,$props"
+        echo "::$level $props::$(escape_data "$message")"
       done
 fi
 
@@ -173,10 +181,10 @@ if [ "$(trim "${JOB_SUMMARY:-true}")" = "true" ] && [ -n "${GITHUB_STEP_SUMMARY:
       echo
     fi
     if [ "${GCS_SKIPPED:-false}" = "true" ]; then
-      echo "- The upload to GitHub code scanning was skipped: pull requests from forks or Dependabot get a read-only \`GITHUB_TOKEN\`. The SARIF file is kept as the \`sarif-file\` output, and \`artifacts: true\` saves it as an artifact."
+      echo "- The upload to GitHub code scanning was skipped: pull requests from forks and Dependabot runs get a read-only \`GITHUB_TOKEN\`. The SARIF file is kept as the \`sarif-file\` output, and \`artifacts: true\` saves it as an artifact."
     fi
     if [ "${SONARQUBE_SKIPPED:-false}" = "true" ]; then
-      echo "- SonarQube was skipped: secrets are not available to pull requests from forks or Dependabot."
+      echo "- SonarQube was skipped: secrets are not available to pull requests from forks or to Dependabot runs."
     fi
     echo
   } >> "$GITHUB_STEP_SUMMARY"

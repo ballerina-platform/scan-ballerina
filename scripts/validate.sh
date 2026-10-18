@@ -164,25 +164,28 @@ if jq -e 'has("github-code-scanning") and (.["github-code-scanning"] // {} | len
   error "platform-config.github-code-scanning takes no settings. It uses the github-token and category inputs."
 fi
 
-# Pull requests from forks or from Dependabot get no secrets and a read-only GITHUB_TOKEN. This
-# holds for the pull_request event only: pull_request_target runs in the base repository.
+# Runs triggered by Dependabot, on any event, and pull requests from forks get no secrets and a
+# read-only GITHUB_TOKEN. pull_request_target and workflow_run run in the base repository.
 RESTRICTED=false
-if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
-  if [ "${GITHUB_ACTOR:-}" = "dependabot[bot]" ]; then
-    RESTRICTED=true
-  elif [ -f "${GITHUB_EVENT_PATH:-}" ] && jq -e \
-    '.pull_request.head.repo.full_name != null and .pull_request.head.repo.full_name != .repository.full_name' \
-    "$GITHUB_EVENT_PATH" > /dev/null 2>&1; then
-    RESTRICTED=true
-  fi
-fi
+case "${GITHUB_EVENT_NAME:-}" in
+  pull_request_target | workflow_run) ;;
+  *)
+    if [ "${GITHUB_ACTOR:-}" = "dependabot[bot]" ]; then
+      RESTRICTED=true
+    elif [ "${GITHUB_EVENT_NAME:-}" = pull_request ] && [ -f "${GITHUB_EVENT_PATH:-}" ] && jq -e \
+      '.pull_request.head.repo.full_name != null and .pull_request.head.repo.full_name != .repository.full_name' \
+      "$GITHUB_EVENT_PATH" > /dev/null 2>&1; then
+      RESTRICTED=true
+    fi
+    ;;
+esac
 
 GCS=false
 GCS_SKIPPED=false
 if selected github-code-scanning; then
   GCS=true
   if [ "$RESTRICTED" = true ]; then
-    log_warning "Skipping the upload to GitHub code scanning: pull requests from forks or Dependabot get a read-only GITHUB_TOKEN. The SARIF file is kept as the sarif-file output; save it with artifacts: true and upload it from a trusted workflow_run workflow."
+    log_warning "Skipping the upload to GitHub code scanning: pull requests from forks and Dependabot runs get a read-only GITHUB_TOKEN. The SARIF file is kept as the sarif-file output; save it with artifacts: true and upload it from a trusted workflow_run workflow."
     GCS=false
     GCS_SKIPPED=true
   fi
@@ -213,7 +216,7 @@ if selected sonarqube; then
     | .token // "" | tostring | select(. != "")] | length > 0' <<< "$CONFIG")"
 
   if [ "$RESTRICTED" = true ] && { [ "${EMPTY_TOKENS:-0}" -gt 0 ] || [ "$ANY_TOKEN" != true ]; }; then
-    log_warning "Skipping sonarqube: secrets are not available to pull requests from forks or Dependabot, so a SonarQube token is empty. The SARIF file is still produced."
+    log_warning "Skipping sonarqube: secrets are not available to pull requests from forks or to Dependabot runs, so a SonarQube token is empty. The SARIF file is still produced."
     SONARQUBE=false
   elif [ "${EMPTY_TOKENS:-0}" -gt 0 ]; then
     error "platform-config.sonarqube has an empty token. Pass each token from a secret, such as token: \${{ secrets.SONAR_TOKEN }}, and check that the secret is set."
@@ -234,8 +237,7 @@ fi
 
 # A work directory per run, so the action can run more than once in a job.
 TEMP_ROOT="$(to_unix_path "${RUNNER_TEMP:-${TMPDIR:-/tmp}}")"
-SAFE_CATEGORY="$(tr -c 'A-Za-z0-9._-' '_' <<< "$(trim "${CATEGORY-bal-scan}")" | sed 's/_$//')"
-WORK="$(mktemp -d "$TEMP_ROOT/scan-ballerina-$SAFE_CATEGORY-XXXXXX")"
+WORK="$(mktemp -d "$TEMP_ROOT/scan-ballerina-$(safe_category)-XXXXXX")"
 # Artifact names keep the category as given, apart from the characters upload-artifact rejects, so
 # that categories such as "a b" and "a_b" get different artifacts.
 ARTIFACT_NAME="$(trim "${CATEGORY-bal-scan}")"

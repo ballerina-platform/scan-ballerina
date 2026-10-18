@@ -14,8 +14,9 @@
 # where kind is version, file or url. Tokens are not written; scan.sh reads them from
 # PLATFORM_CONFIG.
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+source "$SCRIPT_DIR/lib.sh"
 
 WORK="${SCAN_WORK_DIR:?SCAN_WORK_DIR is not set}"
 cd "$(workspace_root)"
@@ -25,7 +26,7 @@ error() { ERRORS+=("$1"); }
 
 CONFIG="$(platform_config_json)" || die "$INVALID_PLATFORM_CONFIG"
 SONAR="$(jq -c '.sonarqube // {}' <<< "$CONFIG")"
-ITEMS="$(jq -c '[.packages // [] | .[] | . + {path: (.path | tostring | sub("^\\./"; "") | sub("/+$"; "") | if . == "" then "." else . end)}]' <<< "$SONAR")"
+ITEMS="$(jq -c -L "$SCRIPT_DIR" 'include "common"; [.packages // [] | .[] | . + {path: (.path | package_path)}]' <<< "$SONAR")"
 UNITS="$(cat "$WORK/units.json")"
 
 while IFS= read -r path; do
@@ -173,6 +174,9 @@ while IFS= read -r unit; do
     error "Package '$pkg' has no SonarQube server URL. Set host-url under platform-config.sonarqube or for the package under packages, or sonar.host.url in its sonar-project.properties."
   elif ! [[ "$host_url" =~ ^https://[^[:space:]/]+ ]]; then
     error "Package '$pkg' has the SonarQube server URL '$host_url' from $host_from, which is not an https URL. The token is sent to it, so only https is accepted."
+  elif [ "$host_from" != "$where.host-url" ] && [ -n "$token" ] && ! jq -e 'has("token")' <<< "$item" > /dev/null; then
+    # Like host-url under packages, a server named outside platform-config needs a token of its own.
+    error "Package '$pkg' takes its SonarQube server URL from $host_from, but its token from the platform level of platform-config.sonarqube. The platform-level token is not sent to another server. Set host-url under platform-config.sonarqube, or set token for the package under packages."
   fi
   if [ -z "$project_key" ]; then
     error "Package '$pkg' has no SonarQube project key. Set project-key for it under platform-config.sonarqube.packages, or sonar.projectKey in its sonar-project.properties."

@@ -18,6 +18,11 @@ def excluded($globs):
 def join_path($dir; $path):
   if $dir == "." or $dir == "" then $path else "\($dir)/\($path)" end;
 
+# Normalizes a package path relative to the repository root: no leading "./" or trailing "/", and
+# "." for the root.
+def package_path:
+  tostring | sub("^\\./"; "") | sub("/+$"; "") | if . == "" then "." else . end;
+
 # Applies f to the artifactLocation.uri of a SARIF location, when it has one.
 def map_uri(f):
   if (.physicalLocation.artifactLocation.uri | type) == "string" then .physicalLocation.artifactLocation.uri |= f else . end;

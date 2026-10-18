@@ -26,8 +26,9 @@
 # package whose SonarQube pass failed.
 # Outputs: packages, the number of packages scanned, when every unit was scanned.
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+source "$SCRIPT_DIR/lib.sh"
 
 WORK="${SCAN_WORK_DIR:?SCAN_WORK_DIR is not set}"
 ROOT="$(workspace_root)"
@@ -48,9 +49,9 @@ fi
 # The token of a package: from its item under packages, then from the platform level. Each token
 # goes to its own package's scan only.
 sonar_token() {
-  jq -r --arg p "$1" '
-    ([.packages // [] | .[] | select((.path | tostring | sub("^\\./"; "") | sub("/+$"; "")
-      | if . == "" then "." else . end) == $p)] | first // {}) as $item
+  jq -r -L "$SCRIPT_DIR" --arg p "$1" '
+    include "common";
+    ([.packages // [] | .[] | select((.path | package_path) == $p)] | first // {}) as $item
     | $item.token // .token // "" | tostring' <<< "$SONAR"
 }
 
@@ -123,7 +124,8 @@ run_bal_scan() {
   local dir="$1" log="$2"
   shift 2
   set +e
-  (cd "$dir" && bal_cmd scan "$@") 2>&1 | tee "$log"
+  # stdin is closed, so that bal scan and the processes it starts cannot read the list of units.
+  (cd "$dir" && bal_cmd scan "$@" < /dev/null) 2>&1 | tee "$log"
   local status="${PIPESTATUS[0]}"
   set -e
   return "$status"
@@ -183,10 +185,8 @@ while IFS= read -r unit; do
     protect "$path/ballerina-static-code-analysis-results.json"
     rm -f "$task_file"
     log="$WORK/logs/sonarqube-$idx.log"
-    # SonarScanner gives these environment settings precedence over the properties file.
-    # analyzedResultsPath is the file the platform plugin writes in the package directory. The
-    # plugin also passes it on the command line, which does not reach SonarScanner on every
-    # operating system, and without it the analysis runs bal scan a second time.
+    # These override the properties file. analyzedResultsPath is set here since the plugin's own
+    # command-line value does not reach SonarScanner on every OS, and bal scan would then run twice.
     user_params="$(jq -c 'objects' <<< "${SONAR_SCANNER_JSON_PARAMS:-}" 2> /dev/null || true)"
     [ -n "$user_params" ] || user_params='{}'
     params="$(jq -c \

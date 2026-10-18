@@ -147,11 +147,8 @@ runs:
       if: steps.find.outputs.count != '0'
       shell: bash
       run: |
-        if command -v bal > /dev/null 2>&1 || command -v bal.bat > /dev/null 2>&1; then
-          echo "installed=true" >> "$GITHUB_OUTPUT"
-        else
-          echo "installed=false" >> "$GITHUB_OUTPUT"
-        fi
+        source "${GITHUB_ACTION_PATH//\\//}/scripts/lib.sh"
+        set_output installed "$(has_bal && echo true || echo false)"
 
     - name: Set up Ballerina
       id: setup-ballerina

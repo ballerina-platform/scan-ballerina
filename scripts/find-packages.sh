@@ -30,7 +30,9 @@ FOUND=()
 while IFS= read -r p; do
   while IFS= read -r toml; do
     FOUND+=("$(repo_relative_dir "$(dirname "$toml")")")
-  done < <(find "$p" \( -name target -o -name build -o -name .git \) -prune -o -name Ballerina.toml -type f -print)
+  # A target or build directory is pruned only when it is not itself a package.
+  done < <(find "$p" -mindepth 1 \( -name .git -o \( -name target -o -name build \) -type d \
+    ! -exec sh -c 'test -f "$1/Ballerina.toml"' sh {} \; \) -prune -o -name Ballerina.toml -type f -print)
 done < <(split_list "${SCAN_PATHS:-.}")
 
 UNITS='[]'

@@ -77,6 +77,7 @@ plugin_url_file() {
   if [ ! -f "$file" ]; then
     download "$url" "$file" || die "Could not download the SonarQube platform plugin from '$url'." >&2
   fi
+  log_warning "The SonarQube platform plugin from '$url' runs with the SonarQube token, but has no checksum to verify it against. Use plugin-version, or a plugin-path to a JAR in the repository, to run a verified plugin." >&2
   printf '%s' "$file"
 }
 

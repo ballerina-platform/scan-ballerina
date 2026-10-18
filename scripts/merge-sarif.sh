@@ -27,8 +27,7 @@ while IFS= read -r unit; do
   INDEX=$((INDEX + 1))
 done < <(jq -c '.[]' "$WORK/units.json")
 
-SAFE_CATEGORY="$(tr -c 'A-Za-z0-9._-' '_' <<< "$(trim "${CATEGORY:-bal-scan}")" | sed 's/_$//')"
-SARIF="$WORK/$SAFE_CATEGORY.sarif"
+SARIF="$WORK/$(safe_category).sarif"
 FILES=()
 for ((i = 0; i < INDEX; i++)); do FILES+=("$WORK/normalized/$i.sarif"); done
 # The merged run keeps plain paths, which the findings and annotations use. The SARIF file gets

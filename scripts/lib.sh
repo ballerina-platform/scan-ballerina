@@ -95,6 +95,11 @@ trim() {
   printf '%s' "$s"
 }
 
+# The category in a form safe for file names, such as the work directory and the SARIF file.
+safe_category() {
+  tr -c 'A-Za-z0-9._-' '_' <<< "$(trim "${CATEGORY:-bal-scan}")" | sed 's/_$//'
+}
+
 # Splits a newline or comma separated list into one trimmed, non-empty item per line.
 split_list() {
   local item
@@ -315,12 +320,8 @@ tool_cache_dir() {
   printf '%s' "$dir"
 }
 
-# Prints a Scan.toml without its [[platform]] entries: all of them with "all", or only the
-# sonarqube ones with "sonarqube". This is line-based text editing, so the rest of the file keeps
-# its bytes, comments and layout. An entry runs until the next table header that is not one of
-# its sub-tables, such as [platform.<name>], so a removed entry takes its sub-tables with it.
-# Entries in other forms, such as an array of inline tables, are not seen, so callers check the
-# result with scan_toml_platforms.
+# Prints a Scan.toml without its [[platform]] entries ("all", or only "sonarqube") and their sub-tables,
+# keeping the rest byte for byte. Other forms are missed, so callers check with scan_toml_platforms.
 drop_platforms() {
   awk -v mode="$1" '
     function flush() { if (!drop) printf "%s", buf; buf = ""; drop = 0; inplat = 0 }
@@ -359,12 +360,8 @@ platform_form_problem() {
   return 0
 }
 
-# Files changed during a scan are recorded in a journal before they are changed: a copy of each
-# existing file, and the SHA-256 of what the action writes. scan.sh restores them as soon as each
-# scan ends. A run that is cancelled, or whose runner stops, may not get to do that, so the next
-# run in the same workspace restores them with recover_files. The journal is kept in the git
-# directory of the repository, which git status does not show and git clean leaves alone, and in
-# the work directory when there is none, where no later run finds it.
+# Kept in the git directory so a later run can restore files a stopped run left changed, while git
+# status and git clean ignore it. Falls back to the work directory outside a git repository.
 journal_dir() {
   local dir
   dir="$(git -C "$(workspace_root)" rev-parse --path-format=absolute --git-path scan-ballerina 2> /dev/null | tr -d '\r')" || dir=""
