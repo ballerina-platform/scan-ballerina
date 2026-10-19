@@ -380,8 +380,12 @@ platform_form_problem() {
 # status and git clean ignore it. Falls back to the work directory outside a git repository.
 journal_dir() {
   local dir
-  dir="$(git -C "$(workspace_root)" rev-parse --path-format=absolute --git-path scan-ballerina 2> /dev/null | tr -d '\r')" || dir=""
-  [ -n "$dir" ] || dir="${SCAN_WORK_DIR:?SCAN_WORK_DIR is not set}/journal"
+  # --absolute-git-dir is the git directory of the worktree, and works with git 2.13 or later.
+  if dir="$(git -C "$(workspace_root)" rev-parse --absolute-git-dir 2> /dev/null)" && [ -n "$dir" ]; then
+    dir="${dir%$'\r'}/scan-ballerina"
+  else
+    dir="${SCAN_WORK_DIR:?SCAN_WORK_DIR is not set}/journal"
+  fi
   to_unix_path "$dir"
 }
 
