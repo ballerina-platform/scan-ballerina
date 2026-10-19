@@ -76,12 +76,12 @@ while IFS= read -r unit; do
     continue
   fi
 
-  item="$(jq -c --arg p "$pkg" 'map(select(.path == $p)) | first // {}' <<< "$ITEMS")"
+  item="$(jq -c -L "$SCRIPT_DIR" --arg p "$pkg" 'include "common"; sonar_item($p)' <<< "$SONAR")"
   where="platform-config.sonarqube"
   [ "$item" != "{}" ] && where="platform-config.sonarqube.packages item '$pkg'"
   # A field from the package's item, then from the platform level.
   pick() {
-    jq -r --arg f "$1" --argjson item "$item" '$item[$f] // .[$f] // "" | tostring' <<< "$SONAR"
+    jq -r -L "$SCRIPT_DIR" --arg p "$pkg" --arg f "$1" 'include "common"; sonar_setting($p; $f)' <<< "$SONAR"
   }
 
   # The package's Scan.toml and its sonarqube [[platform]] entry. For a remote Scan.toml, that is

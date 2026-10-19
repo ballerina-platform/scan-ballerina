@@ -46,13 +46,10 @@ if [ "${SONARQUBE:-false}" = "true" ]; then
   SONAR="$(jq -c '.sonarqube // {}' <<< "$SONAR")"
 fi
 
-# The token of a package: from its item under packages, then from the platform level. Each token
-# goes to its own package's scan only.
+# The token of a package, resolved as check-sonarqube.sh resolved it. Each token goes to its own
+# package's scan only.
 sonar_token() {
-  jq -r -L "$SCRIPT_DIR" --arg p "$1" '
-    include "common";
-    ([.packages // [] | .[] | select((.path | package_path) == $p)] | first // {}) as $item
-    | $item.token // .token // "" | tostring' <<< "$SONAR"
+  jq -r -L "$SCRIPT_DIR" --arg p "$1" 'include "common"; sonar_setting($p; "token")' <<< "$SONAR"
 }
 
 # Each pass restores the files it changed as soon as it ends. The traps also restore them when the

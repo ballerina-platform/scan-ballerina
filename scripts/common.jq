@@ -18,15 +18,25 @@ def excluded($globs):
 def join_path($dir; $path):
   if $dir == "." or $dir == "" then $path else "\($dir)/\($path)" end;
 
-# Normalizes a package path relative to the repository root: no leading "./" or trailing "/", and
-# "." for the root.
 # Escaping for GitHub workflow commands, so that values cannot inject other commands. The same as
 # escape_data and escape_property in lib.sh.
 def escape_data: tostring | gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A");
 def escape_property: escape_data | gsub(":"; "%3A") | gsub(","; "%2C");
 
+# Normalizes a package path relative to the repository root: no leading "./" or trailing "/", and
+# "." for the root.
 def package_path:
   tostring | sub("^\\./"; "") | sub("/+$"; "") | if . == "" then "." else . end;
+
+# On platform-config.sonarqube: the packages item of package $p, or {} when it has none.
+def sonar_item($p):
+  [.packages // [] | .[] | select(type == "object" and (.path | package_path) == $p)] | first // {};
+
+# On platform-config.sonarqube: setting $f of package $p, from its packages item, then from the
+# platform level, or "" when neither sets it. check-sonarqube.sh and scan.sh both resolve settings
+# with it, so that the token sent to SonarScanner is the one that was checked.
+def sonar_setting($p; $f):
+  sonar_item($p)[$f] // .[$f] // "" | tostring;
 
 # Applies f to the artifactLocation.uri of a SARIF location, when it has one.
 def map_uri(f):
