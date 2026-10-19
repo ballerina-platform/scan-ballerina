@@ -684,6 +684,26 @@ jobs:
                 - path: test/projects/multi/payments
                   project-key: shared-key
 
+      # "." and "./" are the same package, so the second item would be ignored.
+      - name: The same package path written two ways
+        id: duplicate-paths
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/multi/orders
+          category: duplicate-paths
+          artifacts: true
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              packages:
+                - path: .
+                  project-key: first-key
+                - path: ./
+                  project-key: second-key
+
       - name: Platform-level project key for two packages
         id: shared-project-key
         continue-on-error: true
@@ -1511,6 +1531,7 @@ jobs:
               "no-token": "Package 'test/projects/multi/orders' has no SonarQube token",
               "empty-token": "platform-config.sonarqube has an empty token",
               "duplicate-keys": "resolve to the same SonarQube project key \"shared-key\"",
+              "duplicate-paths": "platform-config.sonarqube.packages has the path \".\" more than once",
               "shared-project-key": "platform-config.sonarqube.project-key is for a single package, but 2 packages are scanned",
               "leftover-project-key": "platform-config.sonarqube.project-key is for a single package, but 2 packages are scanned",
               "shared-project-name": "platform-config.sonarqube.project-name is for a single package, but 2 packages are scanned",

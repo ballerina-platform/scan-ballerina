@@ -8,8 +8,9 @@
 # Outputs: work-dir, github-code-scanning, github-code-scanning-skipped, sonarqube,
 # sonarqube-skipped, artifacts (true or false), artifact-name.
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+source "$SCRIPT_DIR/lib.sh"
 
 require_command jq "It is preinstalled on GitHub-hosted runners."
 require_command yq "Install mikefarah/yq v4, which is preinstalled on GitHub-hosted runners."
@@ -111,7 +112,8 @@ done < <(jq -r 'keys[]' <<< "$CONFIG")
 
 # Prints one problem per line for the settings of the sonarqube platform.
 sonarqube_schema_errors() {
-  jq -r '
+  jq -r -L "$SCRIPT_DIR" '
+    include "common";
     def scalar: type == "string" or type == "number";
     def check_fields($where; $allowed):
       (keys - $allowed)[] as $k
@@ -151,8 +153,9 @@ sonarqube_schema_errors() {
                  (select(has("host-url") and (has("token") | not))
                    | "\($w) sets host-url, so it must also set token. The platform-level token is not sent to another server.")
                end),
-           ($s.packages // [] | map(select(type == "object") | str("path")
-               | sub("^\\./"; "") | sub("/+$"; "") | select(. != ""))
+           # Paths are compared as check-sonarqube.sh matches them, so "." and "./" are the same.
+           # A missing path is reported as required above, not as a duplicate.
+           ($s.packages // [] | map(select(type == "object") | str("path") | select(. != "") | package_path)
              | group_by(.)[] | select(length > 1)
              | "platform-config.sonarqube.packages has the path \(.[0] | @json) more than once.")
          end)
