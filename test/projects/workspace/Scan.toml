@@ -1,0 +1,5 @@
+# bal scan reads only the members' Scan.toml files, so this platform, whose JAR does not exist,
+# must not be loaded.
+[[platform]]
+name = "missing"
+path = "./missing-platform.jar"

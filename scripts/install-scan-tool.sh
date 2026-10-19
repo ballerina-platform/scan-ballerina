@@ -12,7 +12,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 has_bal || die "The bal command was not found on the path after setting up Ballerina."
 
-BAL_VERSION="$(bal_cmd version | tr -d '\r' | sed -n 's/^Ballerina \([0-9][^ ]*\).*/\1/p' | head -n1)"
+BAL_VERSION="$(bal_version)"
 [ -n "$BAL_VERSION" ] || die "Could not read the Ballerina version from 'bal version'."
 
 WANTED="$(trim "${TOOL_VERSION:-}")"

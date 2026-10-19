@@ -1,0 +1,8 @@
+[package]
+org = "scan_test"
+name = "shipping"
+version = "0.1.0"
+distribution = "2201.13.5"
+
+[build-options]
+observabilityIncluded = false

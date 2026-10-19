@@ -157,6 +157,21 @@ has_bal() {
   command -v bal > /dev/null 2>&1 || command -v bal.bat > /dev/null 2>&1
 }
 
+# Prints the version of the bal on the path, such as 2201.13.5, or nothing when it cannot be read.
+bal_version() {
+  bal_cmd version 2> /dev/null | tr -d '\r' | sed -n 's/^Ballerina \([0-9][^ ]*\).*/\1/p' | head -n1
+}
+
+# Succeeds when the bal on the path can be used for ballerina-version $1: any version for latest,
+# otherwise only the version given, or one within it, such as 2201.13.5 for 2201.13.
+bal_matches() {
+  local current
+  has_bal || return 1
+  [ "$1" = latest ] && return 0
+  current="$(bal_version)"
+  [ -n "$current" ] && { [ "$current" = "$1" ] || [[ "$current" == "$1".* ]]; }
+}
+
 has_command() {
   command -v "$1" > /dev/null 2>&1 || command -v "$1.bat" > /dev/null 2>&1 || command -v "$1.cmd" > /dev/null 2>&1
 }

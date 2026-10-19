@@ -17,6 +17,8 @@ permissions:
 #   test/projects/services/api              1 low
 #   test/projects/services/internal/legacy  2 low
 #   test/projects/secrets                   1 medium
+#   test/projects/workspace/billing         1 low (workspace member)
+#   test/projects/workspace/shipping        1 low (workspace member)
 # The packages in test/sonarqube each set up one SonarQube case, with a Scan.toml or a
 # sonar-project.properties file.
 
@@ -84,6 +86,26 @@ jobs:
           [ "$RESULT" = error ] || fail "result is '$RESULT', expected error"
           [ -z "$SARIF_FILE" ] || fail "sarif-file must be empty, got '$SARIF_FILE'"
           bal version | grep -q '^Ballerina 2201\.12\.0 ' || fail "Ballerina 2201.12.0 is not the installed version"
+
+      # Ballerina 2201.12.0 is now on the path, but a pinned version must still be installed.
+      - name: Scan with a newer pinned version
+        id: pinned
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          tool-version: 0.12.0
+          paths: test/projects/single
+          category: pinned-version
+
+      - name: Check that the pinned version was installed
+        shell: bash
+        env:
+          RESULT: ${{ steps.pinned.outputs.result }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
+          bal version | grep -q '^Ballerina 2201\.13\.5 ' || fail "Ballerina 2201.13.5 is not the installed version"
 
   code-scanning:
     name: Upload to GitHub code scanning
@@ -182,6 +204,43 @@ jobs:
           jq -e 'any(startswith("test/projects/multi/orders/")) and any(startswith("test/projects/multi/payments/"))
               and any(startswith("test/projects/services/api/"))' <<< "$URIS" > /dev/null \
             || fail "The packages that are not excluded must be scanned: $URIS"
+
+  # bal scan reads only the members' Scan.toml files and writes one report for the whole workspace
+  # to <workspace>/target/report. The root Scan.toml names a platform JAR that does not exist, so a
+  # member that read it would be left out of the report.
+  workspace:
+    name: Ballerina workspace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan
+        id: scan
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/workspace
+          category: workspace
+
+      - name: Check that both members were scanned as one workspace
+        shell: bash
+        env:
+          RESULT: ${{ steps.scan.outputs.result }}
+          SARIF_FILE: ${{ steps.scan.outputs.sarif-file }}
+          PACKAGES: ${{ steps.scan.outputs.packages-scanned }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
+          [ "$PACKAGES" = 2 ] || fail "packages-scanned is '$PACKAGES', expected 2"
+          WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-workspace-*)"
+          [ "$(ls "$WORK"/logs | wc -l)" -eq 1 ] || fail "bal scan must run once, from the workspace root: $(ls "$WORK"/logs)"
+          URIS="$(jq -c '[.runs[0].results[].locations[0].physicalLocation.artifactLocation.uri]' "$SARIF_FILE")"
+          jq -e 'any(startswith("test/projects/workspace/billing/")) and any(startswith("test/projects/workspace/shipping/"))' \
+            <<< "$URIS" > /dev/null || fail "Both members must have findings: $URIS"
+          ! grep -rqF 'failed to retrieve remote platform file' "$WORK"/logs \
+            || fail "bal scan must not load the platform in the workspace root's Scan.toml"
+          [ -z "$(git status --porcelain -- test)" ] || fail "The scan must not change the packages: $(git status --porcelain -- test)"
 
   categories:
     name: Two categories in one job

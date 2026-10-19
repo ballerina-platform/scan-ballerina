@@ -7,7 +7,7 @@ branding:
 
 inputs:
   ballerina-version:
-    description: 'Ballerina version to install when Ballerina is not already installed. Pin a version for reproducible runs.'
+    description: 'Ballerina version to install. latest uses the Ballerina already on the path, if there is one; any other version is installed unless it is the one on the path. Pin a version for reproducible runs.'
     required: false
     default: 'latest'
   tool-version:
@@ -143,13 +143,22 @@ runs:
         CATEGORY: ${{ inputs.category }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/check-sonarqube.sh"
 
+    # A bal already on the path is used for latest, or when it is the version asked for.
     - name: Check for Ballerina
       id: bal
       if: steps.find.outputs.count != '0'
       shell: bash
+      env:
+        BALLERINA_VERSION: ${{ inputs.ballerina-version }}
       run: |
         source "${GITHUB_ACTION_PATH//\\//}/scripts/lib.sh"
-        set_output installed "$(has_bal && echo true || echo false)"
+        WANTED="$(trim "${BALLERINA_VERSION:-latest}")"
+        if bal_matches "$WANTED"; then
+          set_output installed true
+        else
+          has_bal && echo "Ballerina $(bal_version) is on the path, but ballerina-version is $WANTED, so Ballerina $WANTED is installed."
+          set_output installed false
+        fi
 
     - name: Set up Ballerina
       id: setup-ballerina

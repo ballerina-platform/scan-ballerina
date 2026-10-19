@@ -143,7 +143,7 @@ The action's last inner step runs even when an earlier one failed, so `result` i
 
 | Input | Default | Description |
 | --- | --- | --- |
-| `ballerina-version` | `latest` | Ballerina version to install when Ballerina is not already installed. Pin a version for reproducible runs. |
+| `ballerina-version` | `latest` | Ballerina version to install. `latest` uses the Ballerina already on the path, if there is one; any other version is installed unless it is the one on the path. Pin a version for reproducible runs. |
 | `tool-version` | pinned per release | `bal scan` tool version. |
 | `platforms` | empty | Comma separated platforms to send the findings to: `github-code-scanning`, `sonarqube`. Empty produces the SARIF file only. |
 | `paths` | `.` | Newline or comma separated paths to scan. Every package and workspace in these paths, including their subdirectories, is scanned, and their findings are merged into one SARIF file. A path that does not exist fails the step. |
@@ -276,7 +276,7 @@ The action is a composite action. Its logic is in the shell and `jq` scripts in 
 1. `validate.sh` checks the inputs.
 2. `find-packages.sh` finds the packages and workspaces in `paths`, skipping `target`, `build` and `.git`. A workspace is scanned once from its root. It checks each package's `Scan.toml` setting, and downloads a remote `Scan.toml`.
 3. `check-sonarqube.sh` resolves each package's SonarQube settings.
-4. [`setup-ballerina`](https://github.com/ballerina-platform/setup-ballerina) installs Ballerina, unless `bal` is already on the path.
+4. [`setup-ballerina`](https://github.com/ballerina-platform/setup-ballerina) installs Ballerina, unless `bal` is already on the path and `ballerina-version` is `latest` or the version of that `bal`.
 5. `install-scan-tool.sh` installs the scan tool, unless that version is already active. With SonarQube, `install-sonarqube.sh` downloads the platform plugin and the SonarScanner CLI, once per job.
 6. `scan.sh` runs `bal scan --format=sarif` on each package, and with SonarQube `bal scan --platforms=sonarqube`.
 7. `merge-sarif.sh` normalizes the paths, drops filtered findings and merges the reports into one run.
