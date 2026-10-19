@@ -228,21 +228,18 @@ resolve_config_path() {
 # the table is there. It treats a configPath that is not an existing file as a URL to download,
 # and a [scan] table without configPath as an error. find-packages.sh checks each package's
 # setting and downloads a remote Scan.toml into the work directory, so the scripts after it read
-# and change that copy.
+# and change that copy. It resolves the setting once per package, with scan_config_info, and
+# keeps it in units.json for the scripts after it.
 
-# Prints [scan] configPath of package $1, empty when it is not set.
-scan_config_value() {
-  jq -r 'if type == "object" and (.configPath | type) == "string" then .configPath else "" end' <<< "$(scan_table "$1")"
+# Prints [scan] configPath of a [scan] table given as JSON, empty when it is not set.
+config_path_of() {
+  jq -r 'if type == "object" and (.configPath | type) == "string" then .configPath else "" end' <<< "$1"
 }
 
-# Prints the URL package $1 reads its Scan.toml from, empty when the file is local or there is none.
-scan_config_url() {
-  local config
-  config="$(scan_config_value "$1")"
-  if [[ "$config" =~ ^[A-Za-z][A-Za-z0-9+.-]*:// ]] && [ ! -f "$(resolve_config_path "$1" "$config")" ]; then
-    printf '%s' "$config"
-  fi
-  return 0
+# Prints [scan] configPath of package $1, empty when it is not set. Parses Ballerina.toml again, so
+# it sees changes made since units.json was written.
+scan_config_value() {
+  config_path_of "$(scan_table "$1")"
 }
 
 # Prints the work-directory copy of a remote Scan.toml, one per URL.
@@ -251,20 +248,39 @@ remote_scan_toml_file() {
     "$(printf '%s' "$1" | sha256_of /dev/stdin | cut -c1-16)"
 }
 
-# Prints the Scan.toml file a package's scan reads, empty when there is none: the work-directory
-# copy for a remote file. $1 is the package directory.
-scan_toml_path() {
-  local pkg="$1" config url
-  config="$(scan_config_value "$pkg")"
-  url="$(scan_config_url "$pkg")"
-  if [ -n "$url" ]; then
-    remote_scan_toml_file "$url"
+# Prints the Scan.toml setting of package $1 as JSON, parsing its Ballerina.toml once:
+#   table      whether Ballerina.toml has a [scan] table
+#   config     its configPath, empty when it is not set
+#   url        the URL the package reads its Scan.toml from, empty when the file is local or there
+#              is none
+#   scan-toml  the Scan.toml file the scan reads, empty when there is none: the work-directory
+#              copy for a remote file
+scan_config_info() {
+  local pkg="$1" table config url="" file=""
+  table="$(scan_table "$pkg")"
+  config="$(config_path_of "$table")"
+  if [[ "$config" =~ ^[A-Za-z][A-Za-z0-9+.-]*:// ]] && [ ! -f "$(resolve_config_path "$pkg" "$config")" ]; then
+    url="$config"
+    file="$(remote_scan_toml_file "$url")"
   elif [ -n "$config" ]; then
-    resolve_config_path "$pkg" "$config"
+    file="$(resolve_config_path "$pkg" "$config")"
   elif [ -f "$pkg/Scan.toml" ]; then
-    printf '%s' "$pkg/Scan.toml"
+    file="$pkg/Scan.toml"
   fi
-  return 0
+  jq -nc --arg path "$pkg" --argjson table "$([ "$table" != null ] && echo true || echo false)" \
+    --arg config "$config" --arg url "$url" --arg file "$file" \
+    '{path: $path, table: $table, config: $config, url: $url, "scan-toml": $file}'
+}
+
+# Sets SCAN_PKG, SCAN_CONFIG, SCAN_URL and SCAN_TOML from the scan_config_info JSON in $1.
+read_scan_config() {
+  { IFS= read -r SCAN_PKG; IFS= read -r SCAN_CONFIG; IFS= read -r SCAN_URL; IFS= read -r SCAN_TOML; } \
+    < <(jq -r '.path // "", .config // "", .url // "", ."scan-toml" // ""' <<< "$1")
+}
+
+# Prints the scan_config_info of package $2 kept in unit $1 of units.json, {} when there is none.
+unit_scan_config() {
+  jq -c --arg p "$2" '[."scan-config" // [] | .[] | select(.path == $p)] | first // {}' <<< "$1"
 }
 
 # Prints a Ballerina.toml ($1) with the configPath of its [scan] table set to $2. Only a

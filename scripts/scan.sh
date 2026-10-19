@@ -63,9 +63,9 @@ trap 'restore_files; exit 143' TERM
 # Points the sonarqube [[platform]] entry of a package's Scan.toml to the resolved plugin JAR until
 # restore_files runs. The other entries and settings are kept. The properties file is passed to
 # SonarScanner through the environment instead, so the entry has no sonarProjectPropertiesPath.
+# $1 is the package's item in sonarqube.json, and $2 its scan_config_info.
 use_plugin() {
-  local settings="$1" pkg file tmp jar
-  pkg="$(jq -r '.package' <<< "$settings")"
+  local settings="$1" info="$2" file tmp jar
   file="$(jq -r '."scan-toml"' <<< "$settings")"
   jar="$(to_native_path "$(jq -r '."plugin-file"' <<< "$settings")")"
   tmp="$(mktemp "$WORK/Scan.toml.XXXXXX")"
@@ -74,30 +74,33 @@ use_plugin() {
     echo >> "$tmp"
   fi
   printf '[[platform]]\nname = "sonarqube"\npath = "%s"\n' "$jar" >> "$tmp"
-  use_scan_toml "$pkg" "$tmp"
+  use_scan_toml "$info" "$tmp"
 }
 
-# Hides the [[platform]] entries of a package's Scan.toml until restore_files runs. A remote
-# Scan.toml is always replaced with a local copy, so that the scan reads the file that
-# find-packages.sh downloaded and checked.
+# Hides the [[platform]] entries of a package's Scan.toml until restore_files runs. $1 is the
+# package's scan_config_info from units.json. A remote Scan.toml is always replaced with a local
+# copy, so that the scan reads the file that find-packages.sh downloaded and checked.
 hide_platforms() {
-  local pkg="$1" file tmp
-  file="$(scan_toml_path "$pkg")"
-  [ -n "$file" ] || return 0
-  if [ -z "$(scan_config_url "$pkg")" ]; then
-    [ -f "$file" ] && grep -Eq '^[[:space:]]*\[\[[[:space:]]*platform[[:space:]]*\]\]' "$file" || return 0
+  local info="$1" tmp
+  read_scan_config "$info"
+  [ -n "$SCAN_TOML" ] || return 0
+  if [ -z "$SCAN_URL" ]; then
+    [ -f "$SCAN_TOML" ] && grep -Eq '^[[:space:]]*\[\[[[:space:]]*platform[[:space:]]*\]\]' "$SCAN_TOML" || return 0
   fi
   tmp="$(mktemp "$WORK/Scan.toml.XXXXXX")"
-  drop_platforms all < "$file" > "$tmp"
-  use_scan_toml "$pkg" "$tmp"
+  drop_platforms all < "$SCAN_TOML" > "$tmp"
+  use_scan_toml "$info" "$tmp"
 }
 
-# Makes package $1 read the Scan.toml in file $2 until restore_files runs. A local Scan.toml, or
-# the package's Scan.toml when it has none, is overwritten with it. A remote one cannot be, so
-# [scan] configPath in Ballerina.toml points to the file instead.
+# Makes a package read the Scan.toml in file $2 until restore_files runs. $1 is the package's
+# scan_config_info. A local Scan.toml, or the package's Scan.toml when it has none, is overwritten
+# with it. A remote one cannot be, so [scan] configPath in Ballerina.toml points to the file
+# instead.
 use_scan_toml() {
-  local pkg="$1" new="$2" target native
-  if [ -n "$(scan_config_url "$pkg")" ]; then
+  local new="$2" pkg target native
+  read_scan_config "$1"
+  pkg="$SCAN_PKG"
+  if [ -n "$SCAN_URL" ]; then
     native="$(to_native_path "$(cd "$(dirname "$new")" && pwd -P)/$(basename "$new")")"
     target="$(mktemp "$WORK/Ballerina.toml.XXXXXX")"
     with_config_path "$pkg/Ballerina.toml" "$native" > "$target"
@@ -108,8 +111,7 @@ use_scan_toml() {
     [ "$(scan_config_value "$pkg")" = "$native" ] \
       || die "Could not point [scan] configPath in '$pkg/Ballerina.toml' to the changed copy of its remote Scan.toml."
   else
-    target="$(scan_toml_path "$pkg")"
-    [ -n "$target" ] || target="$pkg/Scan.toml"
+    target="${SCAN_TOML:-$pkg/Scan.toml}"
     protect "$target" "$(sha256_of "$new")"
     cp "$new" "$target"
     rm -f "$new"
@@ -135,7 +137,6 @@ SONAR_FAILED=()
 INDEX=0
 while IFS= read -r unit; do
   path="$(jq -r '.path' <<< "$unit")"
-  kind="$(jq -r '.kind' <<< "$unit")"
   report="$path/target/report/scan_results.sarif"
   idx=$INDEX
   INDEX=$((INDEX + 1))
@@ -143,13 +144,10 @@ while IFS= read -r unit; do
 
   echo "::group::bal scan $path"
   rm -f "$report" "$out"
-  if [ "$kind" = "workspace" ]; then
-    while IFS= read -r member; do
-      [ -d "$path/$member" ] && hide_platforms "$path/$member"
-    done < <(jq -r '.members[]' <<< "$unit")
-  else
-    hide_platforms "$path"
-  fi
+  # The package, or each member of the workspace.
+  while IFS= read -r info; do
+    hide_platforms "$info"
+  done < <(jq -c '."scan-config" // [] | .[]' <<< "$unit")
 
   status=0
   run_bal_scan "$path" "$WORK/logs/scan-$idx.log" --format=sarif "${RULE_ARGS[@]+"${RULE_ARGS[@]}"}" || status=$?
@@ -193,7 +191,7 @@ while IFS= read -r unit; do
       '$user + {"sonar.projectKey": ."project-key", analyzedResultsPath: $results}
         + (if ."project-name" != "" then {"sonar.projectName": ."project-name"} else {} end)
         + (if $settings != "" then {"project.settings": $settings} else {} end)' <<< "$settings")"
-    use_plugin "$settings"
+    use_plugin "$settings" "$(unit_scan_config "$unit" "$path")"
     status=0
     # Set on this process only, and credentials never appear on the command line.
     PATH="${SCANNER_BIN:+$SCANNER_BIN:}$PATH" \

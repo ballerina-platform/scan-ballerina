@@ -37,16 +37,16 @@ done < <(split_list "${SCAN_PATHS:-.}")
 
 UNITS='[]'
 if [ "${#FOUND[@]}" -gt 0 ]; then
-  while IFS= read -r dir; do
+  # One unit per line, collected into the list by a single jq call.
+  UNITS="$(while IFS= read -r dir; do
     if grep -Eq '^[[:space:]]*\[workspace\][[:space:]]*(#.*)?$' "$dir/Ballerina.toml"; then
       MEMBERS="$(yq -p toml -o json -I0 '.workspace.packages // []' "$dir/Ballerina.toml" 2> /dev/null || echo '[]')"
-      UNIT="$(jq -nc --arg path "$dir" --argjson members "$MEMBERS" \
-        '{path: $path, kind: "workspace", members: [$members[] | tostring | sub("^\\./"; "") | sub("/+$"; "")]}')"
+      jq -nc --arg path "$dir" --argjson members "$MEMBERS" \
+        '{path: $path, kind: "workspace", members: [$members[] | tostring | sub("^\\./"; "") | sub("/+$"; "")]}'
     else
-      UNIT="$(jq -nc --arg path "$dir" '{path: $path, kind: "package", members: []}')"
+      jq -nc --arg path "$dir" '{path: $path, kind: "package", members: []}'
     fi
-    UNITS="$(jq -c --argjson unit "$UNIT" '. + [$unit]' <<< "$UNITS")"
-  done < <(printf '%s\n' "${FOUND[@]}" | sort -u)
+  done < <(printf '%s\n' "${FOUND[@]}" | sort -u) | jq -sc '.')"
 fi
 
 EXCLUDES="$(split_list "${EXCLUDE_PATHS:-}" | jq -R . | jq -sc .)"
@@ -58,7 +58,6 @@ UNITS="$(jq -c -L "$SCRIPT_DIR" --argjson excludes "$EXCLUDES" '
       and (.path | excluded($excludes) | not)))
 ' <<< "$UNITS")"
 
-printf '%s\n' "$UNITS" > "$WORK/units.json"
 COUNT="$(jq 'length' <<< "$UNITS")"
 
 if [ "$COUNT" -eq 0 ]; then
@@ -68,14 +67,14 @@ else
   jq -r '.[] | "  \(.path)\(if .kind == "workspace" then " (workspace)" else "" end)"' <<< "$UNITS"
 fi
 
-# Prints why the Scan.toml settings of package $1 cannot be used, or nothing when they can. A
-# remote Scan.toml is downloaded into the work directory, since the action changes the file
-# during a scan: scan.sh points configPath to a changed copy for each scan.
+# Prints why the Scan.toml settings of a package cannot be used, or nothing when they can. $1 is
+# its scan_config_info. A remote Scan.toml is downloaded into the work directory, since the action
+# changes the file during a scan: scan.sh points configPath to a changed copy for each scan.
 scan_config_problem() {
-  local pkg="$1" config url file probe
-  [ "$(scan_table "$pkg")" != null ] || return 0
-  config="$(scan_config_value "$pkg")"
-  url="$(scan_config_url "$pkg")"
+  local pkg config url file probe
+  [ "$(jq -r '.table' <<< "$1")" = true ] || return 0
+  read_scan_config "$1"
+  pkg="$SCAN_PKG" config="$SCAN_CONFIG" url="$SCAN_URL"
   if [ -z "$config" ]; then
     echo "Package '$pkg' has a [scan] table in Ballerina.toml without configPath, which bal scan rejects. Set configPath to its Scan.toml file, or remove the table to use the package's Scan.toml."
   elif [ -z "$url" ]; then
@@ -110,25 +109,34 @@ scan_config_problem() {
 # whatever platforms are selected, since a scan fails without them. Checked before the tools are
 # downloaded.
 PROBLEMS=()
-while IFS= read -r pkg; do
+INFOS="$(while IFS= read -r pkg; do
   [ -d "$pkg" ] || continue
-  problem="$(scan_config_problem "$pkg")"
+  scan_config_info "$pkg"
+done < <(jq -r -L "$SCRIPT_DIR" 'include "common";
+  .[] | if .kind == "workspace" then .path as $ws | .members[] | join_path($ws; .) else .path end' <<< "$UNITS") \
+  | jq -sc '.')"
+while IFS= read -r info; do
+  problem="$(scan_config_problem "$info")"
   if [ -z "$problem" ]; then
     # The SARIF scan hides the [[platform]] entries, which needs them in a form the action edits.
-    file="$(scan_toml_path "$pkg")"
-    if [ -n "$file" ] && [ -f "$file" ]; then
-      name="$(scan_config_url "$pkg")"
-      [ -n "$name" ] || name="$file"
-      form="$(platform_form_problem "$file" "$name")"
-      [ -z "$form" ] || problem="Package '$pkg': $form"
+    read_scan_config "$info"
+    if [ -n "$SCAN_TOML" ] && [ -f "$SCAN_TOML" ]; then
+      form="$(platform_form_problem "$SCAN_TOML" "${SCAN_URL:-$SCAN_TOML}")"
+      [ -z "$form" ] || problem="Package '$SCAN_PKG': $form"
     fi
   fi
   [ -z "$problem" ] || PROBLEMS+=("$problem")
-done < <(jq -r -L "$SCRIPT_DIR" 'include "common";
-  .[] | if .kind == "workspace" then .path as $ws | .members[] | join_path($ws; .) else .path end' <<< "$UNITS")
+done < <(jq -c '.[]' <<< "$INFOS")
 if [ "${#PROBLEMS[@]}" -gt 0 ]; then
   for p in "${PROBLEMS[@]}"; do log_error "$p"; done
   exit 1
 fi
+
+# Each unit keeps the Scan.toml settings of its packages, so the later steps need not parse
+# Ballerina.toml again.
+jq -L "$SCRIPT_DIR" --argjson infos "$INFOS" 'include "common";
+  map(. as $u
+    | (if .kind == "workspace" then [.members[] | join_path($u.path; .)] else [.path] end) as $pkgs
+    | . + {"scan-config": [$infos[] | select(.path | IN($pkgs[]))]})' <<< "$UNITS" > "$WORK/units.json"
 
 set_output count "$COUNT"

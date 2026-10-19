@@ -86,8 +86,9 @@ while IFS= read -r unit; do
 
   # The package's Scan.toml and its sonarqube [[platform]] entry. For a remote Scan.toml, that is
   # the copy find-packages.sh downloaded, and messages name its URL.
-  scan_toml="$(scan_toml_path "$pkg")"
-  scan_url="$(scan_config_url "$pkg")"
+  read_scan_config "$(unit_scan_config "$unit" "$pkg")"
+  scan_toml="$SCAN_TOML"
+  scan_url="$SCAN_URL"
   scan_toml_name="${scan_url:-$scan_toml}"
   scan_toml_kind="none"
   entry='{}'
