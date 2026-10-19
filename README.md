@@ -294,7 +294,7 @@ The scan tool reads the platform plugin only from `Scan.toml`. For the SonarQube
 
 The platform plugin does not fail `bal scan` when SonarScanner fails. `scan.sh` deletes any old `report-task.txt` before each SonarQube scan, and counts the scan as successful only when `bal scan` succeeds and SonarScanner writes a new `report-task.txt`, which it does once the server has accepted the analysis.
 
-The action runs on GitHub-hosted Ubuntu, macOS and Windows runners, where it uses the bash of Git for Windows. A self-hosted runner needs bash, `jq`, [`yq`](https://github.com/mikefarah/yq) v4, `curl`, `awk` and `git` 2.13 or later, and for SonarQube also `unzip` and `sha256sum` or `shasum`.
+The action runs on GitHub-hosted Ubuntu, macOS and Windows runners, where it uses the bash of Git for Windows. A self-hosted runner needs bash, `jq`, [`yq`](https://github.com/mikefarah/yq) v4, `curl`, `awk`, `sha256sum` or `shasum`, and `git` 2.13 or later, and for SonarQube also `unzip`.
 
 ## Security
 

@@ -20,7 +20,7 @@ def repo_uri:
   if absolute then . else gsub("\\\\"; "/") | sub("^\\./"; "") as $uri | join_path($prefix; $uri) end;
 
 def test_source:
-  . as $uri
+  gsub("\\\\"; "/") as $uri
   | any($packages[]; . as $pkg
       | $uri | test("^\(if $pkg == "" then "" else ($pkg | regex_escape) + "/" end)(modules/[^/]+/)?tests/"));
 
