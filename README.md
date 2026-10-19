@@ -55,8 +55,6 @@ steps:
 
 Settings left out of `platform-config` are read from the package's `sonar-project.properties`. See [Platform configuration](#platform-configuration).
 
-The action does not wait for the SonarQube quality gate. With `sonar.qualitygate.wait=true` in the properties file SonarScanner waits for it, but the platform plugin does not pass on its result, and SonarScanner writes `report-task.txt` once the analysis is accepted, before the gate is computed, so a red gate does not fail the step.
-
 ### Any other SARIF consumer
 
 ```yaml
