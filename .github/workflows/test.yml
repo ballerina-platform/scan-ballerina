@@ -1369,9 +1369,10 @@ jobs:
             HIGH=1 MEDIUM=1 LOW=2 TOTAL=4 PACKAGES_SCANNED=1 bash scripts/report.sh > "$WORK/stdout.txt"
           diff -u test/annotations/expected.txt <(grep '^::' "$WORK/stdout.txt")
 
-  # test/sarif holds two bal scan reports, of a package whose path has a space and of a workspace,
-  # with run.artifacts, artifact indexes, a test file, a '#' in a file name and a backslash in a
-  # URI. The merged file must match test/sarif/expected.sarif.
+  # test/sarif holds three bal scan reports: of a package whose path has a space and of a
+  # workspace, with run.artifacts, artifact indexes, a test file, a '#' in a file name and a
+  # backslash in a URI, and of a package whose results name their rule by rule.id, rule.index or
+  # ruleIndex only, or not at all. The merged file must match test/sarif/expected.sarif.
   sarif-golden:
     name: SARIF merging
     runs-on: ubuntu-latest

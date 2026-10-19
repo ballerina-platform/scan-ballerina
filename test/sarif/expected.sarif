@@ -81,6 +81,88 @@
           },
           "ruleId": "ballerina:1",
           "ruleIndex": 0
+        },
+        {
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "rules/main.bal"
+                },
+                "region": {
+                  "startLine": 4
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Rule one"
+          },
+          "rule": {
+            "id": "ballerina:1",
+            "index": 0
+          },
+          "ruleId": "ballerina:1",
+          "ruleIndex": 0
+        },
+        {
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "rules/main.bal"
+                },
+                "region": {
+                  "startLine": 5
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Rule two"
+          },
+          "rule": {
+            "index": 1
+          },
+          "ruleId": "ballerina:2",
+          "ruleIndex": 1
+        },
+        {
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "rules/main.bal"
+                },
+                "region": {
+                  "startLine": 6
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Rule one"
+          },
+          "ruleId": "ballerina:1",
+          "ruleIndex": 0
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "rules/main.bal"
+                },
+                "region": {
+                  "startLine": 7
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "No rule"
+          }
         }
       ],
       "tool": {

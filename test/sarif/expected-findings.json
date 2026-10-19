@@ -28,5 +28,45 @@
     "message": "Rule one",
     "rule": "ballerina:1",
     "severity": "low"
+  },
+  {
+    "column": null,
+    "end-column": null,
+    "end-line": null,
+    "file": "rules/main.bal",
+    "line": 4,
+    "message": "Rule one",
+    "rule": "ballerina:1",
+    "severity": "low"
+  },
+  {
+    "column": null,
+    "end-column": null,
+    "end-line": null,
+    "file": "rules/main.bal",
+    "line": 5,
+    "message": "Rule two",
+    "rule": "ballerina:2",
+    "severity": "medium"
+  },
+  {
+    "column": null,
+    "end-column": null,
+    "end-line": null,
+    "file": "rules/main.bal",
+    "line": 6,
+    "message": "Rule one",
+    "rule": "ballerina:1",
+    "severity": "low"
+  },
+  {
+    "column": null,
+    "end-column": null,
+    "end-line": null,
+    "file": "rules/main.bal",
+    "line": 7,
+    "message": "No rule",
+    "rule": null,
+    "severity": "high"
   }
 ]

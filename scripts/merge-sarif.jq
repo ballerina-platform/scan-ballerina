@@ -1,8 +1,8 @@
 # Merges normalized bal scan SARIF reports (slurped) into one run, and fills in what GitHub code
 # scanning renders. GitHub accepts one run per category, so all packages share a run: rules are
-# deduplicated by ID and each result's ruleIndex is recomputed. The run.artifacts of the reports
-# are concatenated, so each artifactLocation.index is moved by the number of artifacts of the
-# runs before its own.
+# deduplicated by ID, each result's rule is set as ruleId, and its ruleIndex and rule.index are
+# recomputed. The run.artifacts of the reports are concatenated, so each artifactLocation.index is
+# moved by the number of artifacts of the runs before its own.
 
 def owasp_2025: {
   "A01": "Broken Access Control",
@@ -85,11 +85,24 @@ def shift_indexes($offset):
     + {
       results: ([range(0; $runs | length) as $i
           | ($artifact_counts[:$i] | add // 0) as $offset
-          | $runs[$i].results[]? | shift_indexes($offset)] | map(
+          | ($runs[$i].tool.driver.rules // []) as $run_rules
+          | $runs[$i].results[]? | shift_indexes($offset)
+          # SARIF names a result's rule by ruleId, rule.id, or an index into its own run's rules,
+          # so the ID is found before the runs are merged, and set as ruleId.
+          | (.ruleId
+              // .rule.id?
+              // (.rule.index? | numbers | select(. >= 0) | $run_rules[.].id?)
+              // (.ruleIndex | numbers | select(. >= 0) | $run_rules[.].id?)
+              // null) as $id
+          | if $id then .ruleId = $id else . end] | map(
         .ruleId as $id
-        | .ruleIndex = $index[$id]
-        | if .ruleIndex == null then del(.ruleIndex) else . end
-        | if $generic and $descriptions[$id] then .message.text = $descriptions[$id] else . end
+        # The indexes are recomputed for the merged rules, and dropped when the rule is unknown.
+        | (if $id then $index[$id] else null end) as $new
+        | if $new == null then del(.ruleIndex) else .ruleIndex = $new end
+        | if (.rule | type) == "object" then
+            (if $new == null then del(.rule.index) else .rule.index = $new end)
+          else . end
+        | if $id and $generic and $descriptions[$id] then .message.text = $descriptions[$id] else . end
       ))
     }]
   }
