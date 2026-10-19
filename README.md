@@ -4,7 +4,7 @@
 
 # Scan Ballerina
 
-GitHub Action that runs [`bal scan`](https://ballerina.io/learn/static-code-analysis/) on the Ballerina packages in a repository and sends the findings to the code scanning tool you use: GitHub code scanning, SonarQube, or any other platform that reads SARIF.
+GitHub Action that runs [`bal scan`](https://ballerina.io/learn/scan-tool/) on the Ballerina packages in a repository and sends the findings to the code scanning tool you use: GitHub code scanning, SonarQube, or any other platform that reads SARIF.
 
 The action installs Ballerina and the scan tool, scans every package, and merges the reports into one SARIF 2.1.0 file with paths relative to the repository root. It leaves your files as they were: any file it changes during a scan is restored when that scan ends.
 
@@ -27,9 +27,13 @@ jobs:
           platforms: github-code-scanning
 ```
 
+The findings appear as alerts under **Security and quality > Code scanning**, attributed to the Ballerina Scan Tool:
+
+![Code scanning alerts from the Ballerina Scan Tool](docs/images/code-scanning-alerts.png)
+
 ### SonarQube
 
-The SonarQube server needs the Ballerina language plugin. The action installs the SonarScanner CLI, with its own Java runtime, and the scan tool's SonarQube platform plugin, and passes the server URL, token and project key to the scan:
+The SonarQube server needs the [Ballerina language plugin](https://github.com/ballerina-platform/sonar-ballerina). The action installs the SonarScanner CLI, with its own Java runtime, and the scan tool's SonarQube platform plugin, and passes the server URL, token and project key to the scan:
 
 ```yaml
 permissions:
@@ -51,9 +55,7 @@ steps:
 
 Settings left out of `platform-config` are read from the package's `sonar-project.properties`. See [Platform configuration](#platform-configuration).
 
-Pull request analysis and decoration need SonarQube Developer Edition or higher, where SonarScanner detects the pull request from the GitHub Actions environment. On other editions every analysis goes to the main branch, so run the SonarQube scan on pushes to the main branch only.
-
-The action does not wait for the SonarQube quality gate. With `sonar.qualitygate.wait=true` in the properties file SonarScanner waits for it, but the platform plugin does not pass on its result, and SonarScanner writes `report-task.txt` once the analysis is accepted, before the gate is computed, so a red gate does not fail the step. To block a pull request on the gate, use the quality gate check that SonarQube reports to GitHub.
+The action does not wait for the SonarQube quality gate. With `sonar.qualitygate.wait=true` in the properties file SonarScanner waits for it, but the platform plugin does not pass on its result, and SonarScanner writes `report-task.txt` once the analysis is accepted, before the gate is computed, so a red gate does not fail the step.
 
 ### Any other SARIF consumer
 
@@ -90,6 +92,35 @@ Artifact names are unique within a workflow run, so give each scan its own `cate
 The findings are uploaded before the gate is applied, so they reach the platforms even when the gate fails.
 
 The gate counts every finding in the scanned packages, not only the ones a pull request introduces, so in a repository that already has findings it fails every pull request until they are fixed. To block only new findings, upload to code scanning and use a [code scanning merge protection rule](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets#set-code-scanning-merge-protection) in a ruleset, which fails a pull request on the alerts it introduces.
+
+In a pull request, code scanning comments on the lines that introduce new alerts:
+
+![Code scanning comments on a pull request that introduces new findings](docs/images/pr-new-findings.png)
+
+With the merge protection rule, those alerts block the merge:
+
+![Merging blocked by the alerts a pull request introduces](docs/images/pr-merge-blocked.png)
+
+A pull request that introduces no alerts passes the code scanning check and can be merged, while a `fail-on-severity` gate still fails it on the findings already on the base branch:
+
+![A pull request with no new findings, where code scanning passes and the gate fails](docs/images/pr-no-new-findings.png)
+
+### Job summary and annotations
+
+```yaml
+- uses: ballerina-platform/scan-ballerina@v1
+  with:
+    platforms: github-code-scanning
+    annotations: true
+```
+
+The action writes the result, the counts by severity, the gate and where the findings were sent to the job summary:
+
+![Job summary of a scan that failed the gate](docs/images/job-summary.png)
+
+With `annotations: true`, each counted finding is also shown as a file and line annotation on the run:
+
+![Annotations for the findings of a scan](docs/images/annotations.png)
 
 ### Read the outputs after a failure
 
@@ -152,7 +183,8 @@ platform-config: |
 
 `github-code-scanning` takes no settings.
 
-GitHub puts each `${{ }}` value into the YAML text before the action parses it, so put secrets in single quotes: a value with `:`, `#` or a leading quote or `{` would otherwise change the YAML or fail to parse. A secret that itself holds a single quote or a line break still does not fit. When `platform-config` does not parse, the action fails without printing the parser's error, which can quote the value.
+> [!IMPORTANT]
+> GitHub puts each `${{ }}` value into the YAML text before the action parses it, so put secrets in single quotes: a value with `:`, `#` or a leading quote or `{` would otherwise change the YAML or fail to parse. A secret that itself holds a single quote or a line break still does not fit. When `platform-config` does not parse, the action fails without printing the parser's error, which can quote the value.
 
 ### `sonarqube`
 
