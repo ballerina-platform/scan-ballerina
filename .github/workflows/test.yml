@@ -502,14 +502,14 @@ jobs:
           DIR="$RUNNER_TEMP/downloaded"
           (cd "$DIR" && find . -type f | sort)
 
-          SAVED="$DIR/artifacts-true"
+          SAVED="$DIR/artifacts-true-artifacts"
           [ "$(cd "$SAVED" && find . -type f)" = ./artifacts-true.sarif ] \
             || fail "true: the artifact must hold the merged SARIF file only"
           cmp -s "$SAVED/artifacts-true.sarif" "$SAVED_SARIF" \
             || fail "true: the artifact must hold the same file as the sarif-file output"
           jq -e '.runs[0].results | length > 0' "$SAVED/artifacts-true.sarif" > /dev/null \
             || fail "true: the SARIF file in the artifact has no findings"
-          jq -e '.artifact | .name == "artifacts-true" and (.id | length > 0) and (.url | startswith("https://"))' \
+          jq -e '.artifact | .name == "artifacts-true-artifacts" and (.id | length > 0) and (.url | startswith("https://"))' \
             <<< "$SAVED_UPLOADS" > /dev/null || fail "true: uploads has no artifact entry: $SAVED_UPLOADS"
           SAVED_WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-artifacts-true-*)"
           [ "$(ls "$SAVED_WORK"/logs | wc -l)" -eq 2 ] \
@@ -517,18 +517,18 @@ jobs:
 
           [ "$UNSAVED_RESULT" = passed ] || fail "false: result is '$UNSAVED_RESULT', expected passed"
           [ -f "$UNSAVED_SARIF" ] || fail "false: the SARIF file must still be written, got sarif-file '$UNSAVED_SARIF'"
-          [ ! -e "$DIR/artifacts-false" ] || fail "false: no artifact must be saved"
+          [ ! -e "$DIR/artifacts-false-artifacts" ] || fail "false: no artifact must be saved"
           jq -e 'has("artifact") | not' <<< "$UNSAVED_UPLOADS" > /dev/null \
             || fail "false: uploads must have no artifact entry: $UNSAVED_UPLOADS"
 
           [ "$DEFAULT_RESULT" = passed ] || fail "default: result is '$DEFAULT_RESULT', expected passed"
-          [ ! -e "$DIR/artifacts-default" ] || fail "default: artifacts must default to false, but an artifact was saved"
+          [ ! -e "$DIR/artifacts-default-artifacts" ] || fail "default: artifacts must default to false, but an artifact was saved"
           jq -e 'has("artifact") | not' <<< "$DEFAULT_UPLOADS" > /dev/null \
             || fail "default: uploads must have no artifact entry: $DEFAULT_UPLOADS"
 
           [ "$INVALID_OUTCOME" = failure ] || fail "invalid: artifacts: sarif must fail the step, but its outcome is '$INVALID_OUTCOME'"
           [ "$INVALID_RESULT" = error ] || fail "invalid: result is '$INVALID_RESULT', expected error"
-          [ ! -e "$DIR/artifacts-invalid" ] || fail "invalid: no artifact must be saved when the inputs are invalid"
+          [ ! -e "$DIR/artifacts-invalid-artifacts" ] || fail "invalid: no artifact must be saved when the inputs are invalid"
           [ -z "$(git status --porcelain -- test)" ] || fail "The scans must not change the packages: $(git status --porcelain -- test)"
 
   # The SonarQube tests report to a dummy server, so each scan that gets past the settings fails
@@ -1384,7 +1384,9 @@ jobs:
         with:
           ballerina-version: 2201.13.5
           paths: test/projects/multi, test/restore/sonarqube-failure
-          category: os-${{ matrix.os }}
+          # The same category in every job of the matrix, so the artifact names must still differ.
+          category: os
+          artifacts: true
 
       - name: Check the result
         shell: bash
@@ -1392,10 +1394,13 @@ jobs:
           RESULT: ${{ steps.scan.outputs.result }}
           SARIF_FILE: ${{ steps.scan.outputs.sarif-file }}
           PACKAGES: ${{ steps.scan.outputs.packages-scanned }}
+          UPLOADS: ${{ steps.scan.outputs.uploads }}
         run: |
           set -euo pipefail
           fail() { echo "::error::$1"; exit 1; }
           [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
+          jq -e '.artifact.name | test("^os-operating-systems-[0-9a-f]{8}$")' <<< "$UPLOADS" > /dev/null \
+            || fail "The artifact must be named after the category, the job and the matrix: $UPLOADS"
           [ "$PACKAGES" = 3 ] || fail "packages-scanned is '$PACKAGES', expected 3"
           [ -f "$SARIF_FILE" ] || fail "sarif-file '$SARIF_FILE' does not exist"
           jq -e '[.runs[0].results[].locations[0].physicalLocation.artifactLocation.uri]

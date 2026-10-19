@@ -73,9 +73,9 @@ steps:
     artifacts: true
 ```
 
-The action uploads the merged SARIF file as a workflow artifact named after `category`, holding `<category>.sarif`. It is the same file as the `sarif-file` output, so saving it takes no extra `bal scan` run.
+The action uploads the merged SARIF file as a workflow artifact named `<category>-<job>`, holding `<category>.sarif`. In a matrix job, the name also ends with the first 8 characters of a hash of the matrix values, as in `bal-scan-scan-1a2b3c4d`, so the jobs of a matrix do not collide. It is the same file as the `sarif-file` output, so saving it takes no extra `bal scan` run.
 
-Artifact names are unique within a workflow run, so give each scan its own `category`, including each job of a matrix. Saving the artifact needs no extra permissions, so it also works in pull requests from forks.
+Artifact names are unique within a workflow run, so give each scan in a job its own `category`. Saving the artifact needs no extra permissions, so it also works in pull requests from forks.
 
 ### Gate on findings
 
@@ -156,7 +156,7 @@ The action's last inner step runs even when an earlier one failed, so `result` i
 | `max-findings` | `0` | Findings at or above `fail-on-severity` allowed before the step fails. |
 | `annotations` | `false` | Show each counted finding as a file and line annotation. GitHub shows at most 10 annotations of each level per step and 50 per job, so beyond that the action annotates the first findings of each severity and warns how many it left out. |
 | `job-summary` | `true` | Write the result and the high, medium and low counts to the job summary. |
-| `artifacts` | `false` | Save the merged SARIF file as a workflow artifact named after `category`. See [Save the SARIF file as an artifact](#save-the-sarif-file-as-an-artifact). |
+| `artifacts` | `false` | Save the merged SARIF file as a workflow artifact named after `category` and the job. See [Save the SARIF file as an artifact](#save-the-sarif-file-as-an-artifact). |
 | `platform-config` | empty | YAML mapping, keyed by platform, with the settings and credentials each selected platform needs. JSON is accepted. |
 | `github-token` | `github.token` | Token for installing Ballerina, downloading the SonarQube platform plugin from GitHub Packages and uploading to code scanning. |
 

@@ -4,7 +4,7 @@
 #
 # Inputs (environment): PLATFORMS, SCAN_PATHS, EXCLUDE_PATHS, EXCLUDE_TESTS, CATEGORY,
 # INCLUDE_RULES, EXCLUDE_RULES, FAIL_ON_SEVERITY, MAX_FINDINGS, ANNOTATIONS, JOB_SUMMARY,
-# ARTIFACTS, PLATFORM_CONFIG, BALLERINA_VERSION, TOOL_VERSION.
+# ARTIFACTS, PLATFORM_CONFIG, BALLERINA_VERSION, TOOL_VERSION, MATRIX (the matrix as JSON).
 # Outputs: work-dir, github-code-scanning, github-code-scanning-skipped, sonarqube,
 # sonarqube-skipped, artifacts (true or false), artifact-name.
 
@@ -242,6 +242,13 @@ WORK="$(mktemp -d "$TEMP_ROOT/scan-ballerina-$(safe_category)-XXXXXX")"
 # that categories such as "a b" and "a_b" get different artifacts.
 ARTIFACT_NAME="$(trim "${CATEGORY-bal-scan}")"
 for c in '"' ':' '<' '>' '|' '*' '?' '\' '/' $'\r' $'\n'; do ARTIFACT_NAME="${ARTIFACT_NAME//"$c"/_}"; done
+# Artifact names must be unique in the whole run, so the job, and a hash of the matrix values when
+# there are any, tell apart jobs, and matrix jobs, that use the same category.
+[ -z "${GITHUB_JOB:-}" ] || ARTIFACT_NAME="$ARTIFACT_NAME-$GITHUB_JOB"
+case "${MATRIX:-}" in
+  '' | null) ;;
+  *) ARTIFACT_NAME="$ARTIFACT_NAME-$(printf '%s' "$MATRIX" | sha256_of /dev/stdin | cut -c1-8)" ;;
+esac
 mkdir -p "$WORK/reports" "$WORK/logs"
 
 set_output work-dir "$WORK"

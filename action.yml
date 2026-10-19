@@ -59,7 +59,7 @@ inputs:
     required: false
     default: 'true'
   artifacts:
-    description: 'Save the merged SARIF file as a workflow artifact named after the category.'
+    description: 'Save the merged SARIF file as a workflow artifact named after the category and the job.'
     required: false
     default: 'false'
   platform-config:
@@ -120,6 +120,7 @@ runs:
         PLATFORM_CONFIG: ${{ inputs.platform-config }}
         BALLERINA_VERSION: ${{ inputs.ballerina-version }}
         TOOL_VERSION: ${{ inputs.tool-version }}
+        MATRIX: ${{ toJSON(matrix) }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/validate.sh"
 
     - name: Find packages
