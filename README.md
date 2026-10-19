@@ -257,7 +257,7 @@ Findings never fail the step unless you set `fail-on-severity`. Problems with th
 
 | Situation | Result |
 | --- | --- |
-| Invalid input, or a path that does not exist | Fails before packages are searched or anything is downloaded |
+| Invalid input, or a path that does not exist | Fails before packages are searched or anything but `yq` is downloaded |
 | Missing or invalid SonarQube settings, missing or duplicate project keys, a `packages` item that matches no package or repeats a path, or a workspace with `sonarqube` | Fails after packages are found, before anything is downloaded |
 | No package found | Passes with a warning, result `skipped` |
 | `bal scan` fails for a package | The other packages are still scanned, then the step fails without a SARIF file |
@@ -273,7 +273,7 @@ Findings never fail the step unless you set `fail-on-severity`. Problems with th
 
 The action is a composite action. Its logic is in the shell and `jq` scripts in [`scripts/`](scripts), which read their inputs from environment variables and can be run locally:
 
-1. `validate.sh` checks the inputs.
+1. `install-yq.sh` installs `yq` when the runner has no `yq` v4, as on Windows runners. `validate.sh` checks the inputs.
 2. `find-packages.sh` finds the packages and workspaces in `paths`, skipping `target`, `build` and `.git`. A workspace is scanned once from its root. It checks each package's `Scan.toml` setting, and downloads a remote `Scan.toml`.
 3. `check-sonarqube.sh` resolves each package's SonarQube settings.
 4. [`setup-ballerina`](https://github.com/ballerina-platform/setup-ballerina) installs Ballerina, unless `bal` is already on the path and `ballerina-version` is `latest` or the version of that `bal`.
@@ -294,11 +294,11 @@ The scan tool reads the platform plugin only from `Scan.toml`. For the SonarQube
 
 The platform plugin does not fail `bal scan` when SonarScanner fails. `scan.sh` deletes any old `report-task.txt` before each SonarQube scan, and counts the scan as successful only when `bal scan` succeeds and SonarScanner writes a new `report-task.txt`, which it does once the server has accepted the analysis.
 
-The action runs on GitHub-hosted Ubuntu, macOS and Windows runners, where it uses the bash of Git for Windows. A self-hosted runner needs bash, `jq`, [`yq`](https://github.com/mikefarah/yq) v4, `curl`, `awk`, `sha256sum` or `shasum`, and `git` 2.13 or later, and for SonarQube also `unzip`.
+The action runs on GitHub-hosted Ubuntu, macOS and Windows runners, where it uses the bash of Git for Windows. A self-hosted runner needs bash, `jq`, `curl`, `awk`, `sha256sum` or `shasum`, and `git` 2.13 or later, and for SonarQube also `unzip`. The action installs [`yq`](https://github.com/mikefarah/yq) v4 when the runner has none.
 
 ## Security
 
-- `setup-ballerina`, `upload-sarif` and `upload-artifact` are pinned by full commit SHA, which Dependabot keeps up to date, and the scan tool by version. The SonarQube platform plugin and the SonarScanner CLI are downloaded at the versions this release pins, and their SHA-256 is verified. A `plugin-version` this release has no checksum for, and a plugin given as an `https` URL, are downloaded with a warning, since they cannot be verified.
+- `setup-ballerina`, `upload-sarif` and `upload-artifact` are pinned by full commit SHA, which Dependabot keeps up to date, and the scan tool by version. `yq`, when the runner has none, and the SonarQube platform plugin and the SonarScanner CLI are downloaded at the versions this release pins, and their SHA-256 is verified. A `plugin-version` this release has no checksum for, and a plugin given as an `https` URL, are downloaded with a warning, since they cannot be verified.
 - Inputs reach the scripts as environment variables and are never interpolated into scripts.
 - Every `token` in `platform-config`, at the platform level and under each `packages` item, is masked, and `platform-config` is never printed. Each package's token goes to that package's scan only.
 - The action needs only `contents: read`. With `github-code-scanning`, it also needs `security-events: write`, and `actions: read` in private repositories. With `sonarqube` and the default plugin, it also needs `packages: read`.

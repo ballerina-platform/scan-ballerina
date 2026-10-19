@@ -43,6 +43,21 @@ sonar_scanner_sha256() {
   esac
 }
 
+# The mikefarah/yq an action release installs when the runner has no yq v4, as on GitHub-hosted
+# Windows runners, with the SHA-256 of each binary.
+PINNED_YQ_VERSION="4.54.1"
+yq_sha256() {
+  case "$1" in
+    linux_amd64) echo 8e34fc298390875de416e6a4afcb8cabeceb25d9aa8506c1a2f9353cf702ea5f ;;
+    linux_arm64) echo 189088da0c6429ec5178dfaab1a114805f6cab0b61b165ab236efedf1d57a71b ;;
+    darwin_amd64) echo 3a812fce205a4d67014fb71b7fa297092210e580df3d8f52dddc2cf3a599c22b ;;
+    darwin_arm64) echo fee511a181bd8b3e6b7da98842b41973bfac8cd3bcd341ed29a584620b5b2844 ;;
+    windows_amd64) echo b645f47ebb3a0d2fbab52998550bbd0a1706f23b5ca5f5b48e638c580bb70928 ;;
+    windows_arm64) echo c46a295a98c31173e72220da7c35f86fbcc1c2cd2da5188105f326b32585e984 ;;
+    *) return 1 ;;
+  esac
+}
+
 KNOWN_PLATFORMS=(github-code-scanning sonarqube)
 
 # jq on Windows ends lines with CRLF, which 'read' keeps. JSON escapes CRs inside strings, so
@@ -341,6 +356,20 @@ sha256_of() {
     sha256sum "$1" | cut -d' ' -f1
   else
     shasum -a 256 "$1" | cut -d' ' -f1
+  fi
+}
+
+# Downloads an https URL to a file, which is left untouched when the download fails. Further
+# arguments go to curl.
+download() {
+  local url="$1" out="$2" tmp
+  shift 2
+  tmp="$(mktemp "$out.XXXXXX")"
+  if curl -fsSL --proto '=https' --retry 3 "$@" -o "$tmp" "$url"; then
+    mv "$tmp" "$out"
+  else
+    rm -f "$tmp"
+    return 1
   fi
 }
 

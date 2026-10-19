@@ -19,18 +19,6 @@ WORK="${SCAN_WORK_DIR:?SCAN_WORK_DIR is not set}"
 ROOT="$(workspace_root)"
 CACHE="$(tool_cache_dir)"
 
-download() {
-  local url="$1" out="$2" tmp
-  shift 2
-  tmp="$(mktemp "$out.XXXXXX")"
-  if curl -fsSL --proto '=https' --retry 3 "$@" -o "$tmp" "$url"; then
-    mv "$tmp" "$out"
-  else
-    rm -f "$tmp"
-    return 1
-  fi
-}
-
 # Downloads from GitHub Packages, which needs a token with read:packages even for public packages.
 download_package() {
   download "$1" "$2" -H "Authorization: Bearer ${GITHUB_TOKEN:-}"

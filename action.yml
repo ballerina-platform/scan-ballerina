@@ -101,6 +101,13 @@ runs:
   using: 'composite'
   steps:
     # Inputs reach the scripts as environment variables, never interpolated into run blocks.
+    - name: Install yq
+      id: yq
+      shell: bash
+      env:
+        CATEGORY: ${{ inputs.category }}
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/install-yq.sh"
+
     - name: Validate inputs
       id: validate
       shell: bash
@@ -244,6 +251,7 @@ runs:
         MAX_FINDINGS: ${{ inputs.max-findings }}
         FAILED_STEP: >-
           ${{
+            (steps.yq.outcome != 'success' && 'install yq') ||
             (steps.validate.outcome != 'success' && 'validate the inputs') ||
             (steps.find.outcome != 'success' && 'find packages') ||
             (steps.sonarqube.outcome == 'failure' && 'resolve the SonarQube settings') ||

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Step 1: validates the inputs and creates the work directory. Needs only the inputs themselves,
-# so it runs before packages are searched or anything is downloaded.
+# so it runs before packages are searched or anything but yq is downloaded.
 #
 # Inputs (environment): PLATFORMS, SCAN_PATHS, EXCLUDE_PATHS, EXCLUDE_TESTS, CATEGORY,
 # INCLUDE_RULES, EXCLUDE_RULES, FAIL_ON_SEVERITY, MAX_FINDINGS, ANNOTATIONS, JOB_SUMMARY,
@@ -13,7 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 
 require_command jq "It is preinstalled on GitHub-hosted runners."
-require_command yq "Install mikefarah/yq v4, which is preinstalled on GitHub-hosted runners."
+require_command yq "Install mikefarah/yq v4, or run install-yq.sh first."
 
 # Credentials first, so that nothing printed later can reveal them.
 CONFIG="$(platform_config_json)" || die "$INVALID_PLATFORM_CONFIG"
