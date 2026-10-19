@@ -1,0 +1,6 @@
+[
+  {"severity": "high", "rule": null, "message": "No rule ID", "file": "a/main.bal", "line": 3, "end-line": 4},
+  {"severity": "medium", "rule": "ballerina:1", "message": "line1\nline2\twith a tab, 100% sure", "file": "dir, with: chars/x.bal", "line": 5, "end-line": null},
+  {"severity": "low", "rule": "ballerina:2", "message": "", "file": "", "line": 1, "end-line": null},
+  {"severity": "low", "rule": "ballerina:3", "message": "::error::injected", "file": "b.bal", "line": 2, "end-line": 2}
+]

@@ -1347,6 +1347,28 @@ jobs:
           fi
           [ "$FAILURES" -eq 0 ] || exit 1
 
+  # test/annotations/findings.json has a finding without a rule, a message with a newline and a tab,
+  # a file name with "," and ":", a finding without a file and a message that looks like a workflow
+  # command. The annotation commands must match test/annotations/expected.txt.
+  annotation-commands:
+    name: Annotation commands
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write the annotations and compare with the golden file
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/annotation-commands"
+          mkdir -p "$WORK"
+          cp test/annotations/findings.json "$WORK/"
+          : > "$WORK/sonarqube-failures.txt"
+          # The commands go to a file, so that they do not annotate this job.
+          SCAN_WORK_DIR="$WORK" CATEGORY=annotations ANNOTATIONS=true JOB_SUMMARY=false \
+            HIGH=1 MEDIUM=1 LOW=2 TOTAL=4 PACKAGES_SCANNED=1 bash scripts/report.sh > "$WORK/stdout.txt"
+          diff -u test/annotations/expected.txt <(grep '^::' "$WORK/stdout.txt")
+
   # test/sarif holds two bal scan reports, of a package whose path has a space and of a workspace,
   # with run.artifacts, artifact indexes, a test file, a '#' in a file name and a backslash in a
   # URI. The merged file must match test/sarif/expected.sarif.

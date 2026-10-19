@@ -20,6 +20,11 @@ def join_path($dir; $path):
 
 # Normalizes a package path relative to the repository root: no leading "./" or trailing "/", and
 # "." for the root.
+# Escaping for GitHub workflow commands, so that values cannot inject other commands. The same as
+# escape_data and escape_property in lib.sh.
+def escape_data: tostring | gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A");
+def escape_property: escape_data | gsub(":"; "%3A") | gsub(","; "%2C");
+
 def package_path:
   tostring | sub("^\\./"; "") | sub("/+$"; "") | if . == "" then "." else . end;
 

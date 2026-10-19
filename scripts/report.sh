@@ -10,8 +10,9 @@
 # failed makes the result error and fails the step here, after the SARIF file was uploaded.
 # Outputs: result, uploads, high-count, medium-count, low-count, total-count, packages-scanned.
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+source "$SCRIPT_DIR/lib.sh"
 
 # GitHub shows at most this many annotations of each level (error, warning, notice) per step, and
 # drops the rest without a notice.
@@ -116,25 +117,19 @@ if [ "$(trim "${ANNOTATIONS:-false}")" = "true" ] && [ -n "$WORK" ] && [ -f "$WO
     ANNOTATION_NOTE="Annotated $SHOWN of the $((HIGH + MEDIUM + LOW)) findings, since GitHub shows at most $ANNOTATION_LIMIT annotations of each level per step and 50 per job. The SARIF file and the platforms it was sent to have every finding."
     log_warning "$ANNOTATION_NOTE"
   fi
-  jq -r --argjson slots "{\"high\": $HIGH_SLOTS, \"medium\": $MEDIUM_SLOTS, \"low\": $LOW_SLOTS}" '
+  # jq writes the workflow commands itself, so that empty fields and messages with tabs or newlines
+  # need no splitting in bash.
+  jq -r -L "$SCRIPT_DIR" --argjson slots "{\"high\": $HIGH_SLOTS, \"medium\": $MEDIUM_SLOTS, \"low\": $LOW_SLOTS}" '
+      include "common";
       . as $all
       | ("high", "medium", "low") as $s
       | [$all[] | select(.severity == $s)][:$slots[$s]][]
-      | [
-          ({"high": "error", "medium": "warning", "low": "notice"}[.severity]),
-          .file, (.line | tostring), ((."end-line" // .line) | tostring), .rule, .message
-        ]
-      # Empty fields are written as "-", since read joins consecutive tabs.
-      | map(if . == "" then "-" else . end)
-      | @tsv' "$WORK/findings.json" \
-    | while IFS=$'\t' read -r level file line end_line rule message; do
-        [ "$file" != - ] || file=""
-        [ "$rule" != - ] || rule=""
-        [ "$message" != - ] || message=""
-        props="title=$(escape_property "$rule")"
-        [ -z "$file" ] || props="file=$(escape_property "$file"),line=$line,endLine=$end_line,$props"
-        echo "::$level $props::$(escape_data "$message")"
-      done
+      | (.file // "") as $file
+      | ((if $file == "" then ""
+          else "file=\($file | escape_property),line=\(.line),endLine=\(."end-line" // .line),"
+          end) + "title=\(.rule // "" | escape_property)") as $props
+      | "::\({"high": "error", "medium": "warning", "low": "notice"}[.severity]) \($props)::\(.message // "" | escape_data)"
+    ' "$WORK/findings.json"
 fi
 
 if [ "$(trim "${JOB_SUMMARY:-true}")" = "true" ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then

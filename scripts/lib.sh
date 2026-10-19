@@ -51,7 +51,8 @@ if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]]; then
   jq() { command jq "$@" | tr -d '\r'; }
 fi
 
-# GitHub workflow commands. Values are escaped so that they cannot inject other commands.
+# GitHub workflow commands. Values are escaped so that they cannot inject other commands. common.jq
+# has the same escaping for the annotations that report.sh writes from jq.
 escape_data() {
   local s="$1"
   s="${s//'%'/'%25'}"

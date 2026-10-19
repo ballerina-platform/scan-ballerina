@@ -1,0 +1,4 @@
+::error file=a/main.bal,line=3,endLine=4,title=::No rule ID
+::warning file=dir%2C with%3A chars/x.bal,line=5,endLine=5,title=ballerina%3A1::line1%0Aline2	with a tab, 100%25 sure
+::notice title=ballerina%3A2::
+::notice file=b.bal,line=2,endLine=2,title=ballerina%3A3::::error::injected
