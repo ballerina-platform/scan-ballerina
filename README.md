@@ -9,7 +9,7 @@ GitHub Action that runs [`bal scan`](https://ballerina.io/learn/scan-tool/) on t
 The action installs Ballerina and the scan tool, scans every package, and merges the reports into one SARIF 2.1.0 file with paths relative to the repository root. It leaves your files as they were: any file it changes during a scan is restored when that scan ends.
 
 > [!NOTE]
-> `v0.1.0` is a pre-release that uses scan tool 0.12.0. The inputs are stable, but `v1` will support scan tool 1.0.0 and later only, so `tool-version` values below 1.0.0 will not work with it. Rule IDs, severities and the findings reported may change with scan tool 1.0.0, so review `include-rules`, `exclude-rules`, `fail-on-severity` and `max-findings` when moving to `v1`.
+> `v0` is a pre-release that uses scan tool 0.12.0. It tracks the latest `v0.x.y` release; pin a release tag such as `v0.1.0`, or a commit SHA, for reproducible runs. The inputs are stable, but `v1` will support scan tool 1.0.0 and later only, so `tool-version` values below 1.0.0 will not work with it. Rule IDs, severities and the findings reported may change with scan tool 1.0.0, so review `include-rules`, `exclude-rules`, `fail-on-severity` and `max-findings` when moving to `v1`.
 
 ## Usage
 
@@ -25,7 +25,7 @@ jobs:
       actions: read # Only needed in private repositories
     steps:
       - uses: actions/checkout@v4
-      - uses: ballerina-platform/scan-ballerina@v0.1.0
+      - uses: ballerina-platform/scan-ballerina@v0
         with:
           platforms: github-code-scanning
 ```
@@ -46,7 +46,7 @@ steps:
   - uses: actions/checkout@v4
     with:
       fetch-depth: 0 # SonarQube needs history for blame and new-code detection
-  - uses: ballerina-platform/scan-ballerina@v0.1.0
+  - uses: ballerina-platform/scan-ballerina@v0
     with:
       platforms: sonarqube
       platform-config: |
@@ -64,14 +64,14 @@ Settings left out of `platform-config` are read from the package's `sonar-projec
 steps:
   - uses: actions/checkout@v4
   - id: scan
-    uses: ballerina-platform/scan-ballerina@v0.1.0
+    uses: ballerina-platform/scan-ballerina@v0
   - run: ./upload-to-defectdojo.sh "${{ steps.scan.outputs.sarif-file }}"
 ```
 
 ### Save the SARIF file as an artifact
 
 ```yaml
-- uses: ballerina-platform/scan-ballerina@v0.1.0
+- uses: ballerina-platform/scan-ballerina@v0
   with:
     artifacts: true
 ```
@@ -83,7 +83,7 @@ Artifact names are unique within a workflow run, so give each scan in a job its 
 ### Gate on findings
 
 ```yaml
-- uses: ballerina-platform/scan-ballerina@v0.1.0
+- uses: ballerina-platform/scan-ballerina@v0
   with:
     platforms: github-code-scanning
     fail-on-severity: medium # Fail on medium or high findings
@@ -109,7 +109,7 @@ A pull request that introduces no alerts passes the code scanning check and can 
 ### Job summary and annotations
 
 ```yaml
-- uses: ballerina-platform/scan-ballerina@v0.1.0
+- uses: ballerina-platform/scan-ballerina@v0
   with:
     platforms: github-code-scanning
     annotations: true
@@ -129,7 +129,7 @@ Steps after a failed step do not run unless they ask to, so read the outputs fro
 
 ```yaml
 - id: scan
-  uses: ballerina-platform/scan-ballerina@v0.1.0
+  uses: ballerina-platform/scan-ballerina@v0
   with:
     platforms: github-code-scanning
     fail-on-severity: high
