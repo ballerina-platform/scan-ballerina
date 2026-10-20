@@ -190,6 +190,7 @@ bal_matches() {
 
 # Removes the Ballerina distributions installed from .deb packages. Each version is its own package
 # but installs into /usr/lib/ballerina, so dpkg refuses to install another version over it.
+# Remove once setup-ballerina does this: https://github.com/ballerina-platform/setup-ballerina/issues/23
 remove_ballerina_debs() {
   local pkgs sudo=sudo
   command -v dpkg-query > /dev/null 2>&1 || return 0
