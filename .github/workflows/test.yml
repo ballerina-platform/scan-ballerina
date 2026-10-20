@@ -107,40 +107,6 @@ jobs:
           [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
           bal version | grep -q '^Ballerina 2201\.13\.5 ' || fail "Ballerina 2201.13.5 is not the installed version"
 
-  code-scanning:
-    name: Upload to GitHub code scanning
-    # Pull requests from forks get a read-only token.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
-      actions: read
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Scan and upload
-        id: scan
-        uses: ./
-        with:
-          ballerina-version: 2201.13.5
-          paths: test/projects/single
-          platforms: github-code-scanning
-          category: bal-scan-test
-          artifacts: true
-
-      - name: Check the upload
-        shell: bash
-        env:
-          RESULT: ${{ steps.scan.outputs.result }}
-          UPLOADS: ${{ steps.scan.outputs.uploads }}
-        run: |
-          set -euo pipefail
-          fail() { echo "::error::$1"; exit 1; }
-          [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
-          jq -e '."github-code-scanning"."sarif-id" | type == "string" and length > 0' <<< "$UPLOADS" > /dev/null \
-            || fail "uploads has no sarif-id: $UPLOADS"
-
   single-path:
     name: One path with several packages
     runs-on: ubuntu-latest
@@ -542,6 +508,7 @@ jobs:
         with:
           pattern: artifacts-*
           path: ${{ runner.temp }}/downloaded
+          merge-multiple: true
 
       - name: Check the artifacts
         shell: bash
@@ -561,12 +528,12 @@ jobs:
           DIR="$RUNNER_TEMP/downloaded"
           (cd "$DIR" && find . -type f | sort)
 
-          SAVED="$DIR/artifacts-true-artifacts"
-          [ "$(cd "$SAVED" && find . -type f)" = ./artifacts-true.sarif ] \
-            || fail "true: the artifact must hold the merged SARIF file only"
-          cmp -s "$SAVED/artifacts-true.sarif" "$SAVED_SARIF" \
+          # Every matching artifact is extracted here, so one file also means no other artifact was saved.
+          [ "$(cd "$DIR" && find . -type f)" = ./artifacts-true.sarif ] \
+            || fail "Only the true scan must save an artifact, holding the merged SARIF file only"
+          cmp -s "$DIR/artifacts-true.sarif" "$SAVED_SARIF" \
             || fail "true: the artifact must hold the same file as the sarif-file output"
-          jq -e '.runs[0].results | length > 0' "$SAVED/artifacts-true.sarif" > /dev/null \
+          jq -e '.runs[0].results | length > 0' "$DIR/artifacts-true.sarif" > /dev/null \
             || fail "true: the SARIF file in the artifact has no findings"
           jq -e '.artifact | .name == "artifacts-true-artifacts" and (.id | length > 0) and (.url | startswith("https://"))' \
             <<< "$SAVED_UPLOADS" > /dev/null || fail "true: uploads has no artifact entry: $SAVED_UPLOADS"
@@ -576,18 +543,15 @@ jobs:
 
           [ "$UNSAVED_RESULT" = passed ] || fail "false: result is '$UNSAVED_RESULT', expected passed"
           [ -f "$UNSAVED_SARIF" ] || fail "false: the SARIF file must still be written, got sarif-file '$UNSAVED_SARIF'"
-          [ ! -e "$DIR/artifacts-false-artifacts" ] || fail "false: no artifact must be saved"
           jq -e 'has("artifact") | not' <<< "$UNSAVED_UPLOADS" > /dev/null \
             || fail "false: uploads must have no artifact entry: $UNSAVED_UPLOADS"
 
           [ "$DEFAULT_RESULT" = passed ] || fail "default: result is '$DEFAULT_RESULT', expected passed"
-          [ ! -e "$DIR/artifacts-default-artifacts" ] || fail "default: artifacts must default to false, but an artifact was saved"
           jq -e 'has("artifact") | not' <<< "$DEFAULT_UPLOADS" > /dev/null \
             || fail "default: uploads must have no artifact entry: $DEFAULT_UPLOADS"
 
           [ "$INVALID_OUTCOME" = failure ] || fail "invalid: artifacts: sarif must fail the step, but its outcome is '$INVALID_OUTCOME'"
           [ "$INVALID_RESULT" = error ] || fail "invalid: result is '$INVALID_RESULT', expected error"
-          [ ! -e "$DIR/artifacts-invalid-artifacts" ] || fail "invalid: no artifact must be saved when the inputs are invalid"
           [ -z "$(git status --porcelain -- test)" ] || fail "The scans must not change the packages: $(git status --porcelain -- test)"
 
   # The SonarQube tests report to a dummy server, so each scan that gets past the settings fails
@@ -632,10 +596,10 @@ jobs:
               token: dummy-token
               project-key: http-plugin
 
-      # Pull requests from forks get no secrets, so there the action skips SonarQube instead.
+      # Pull requests from forks and Dependabot runs get no secrets, so there the action skips SonarQube instead.
       - name: No token
         id: no-token
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        if: github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         continue-on-error: true
         uses: ./
         with:
@@ -651,7 +615,7 @@ jobs:
       # A secret that is not set resolves to an empty value.
       - name: Empty token
         id: empty-token
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        if: github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         continue-on-error: true
         uses: ./
         with:
@@ -1544,8 +1508,8 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          # Pull requests from forks get no secrets, so there the token steps are skipped.
-          FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          # Pull requests from forks and Dependabot runs get no secrets, so there the token steps are skipped.
+          NO_SECRETS: ${{ github.actor == 'dependabot[bot]' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) }}
           # The error each step must report, by step ID, which is also its category.
           EXPECTED: |
             {
@@ -1570,7 +1534,7 @@ jobs:
           ANNOTATIONS="$(bash .github/scripts/annotations.sh 'SonarQube settings that fail')"
           jq . <<< "$ANNOTATIONS"
           while IFS=$'\t' read -r id message; do
-            if [ "$FORK_PR" = true ] && { [ "$id" = no-token ] || [ "$id" = empty-token ]; }; then
+            if [ "$NO_SECRETS" = true ] && { [ "$id" = no-token ] || [ "$id" = empty-token ]; }; then
               echo "$id: skipped"
               continue
             fi

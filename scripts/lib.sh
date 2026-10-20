@@ -188,6 +188,21 @@ bal_matches() {
   [ -n "$current" ] && { [ "$current" = "$1" ] || [[ "$current" == "$1".* ]]; }
 }
 
+# Removes the Ballerina distributions installed from .deb packages. Each version is its own package
+# but installs into /usr/lib/ballerina, so dpkg refuses to install another version over it.
+remove_ballerina_debs() {
+  local pkgs sudo=sudo
+  command -v dpkg-query > /dev/null 2>&1 || return 0
+  # shellcheck disable=SC2016
+  pkgs="$(dpkg-query -W -f='${Package} ${db:Status-Status}\n' 'ballerina-*' 2> /dev/null \
+    | awk '$2 == "installed" { print $1 }')" || true
+  [ -n "$pkgs" ] || return 0
+  [ "$(id -u)" -eq 0 ] && sudo=""
+  echo "Removing the installed Ballerina packages: ${pkgs//$'\n'/ }"
+  # shellcheck disable=SC2086
+  $sudo dpkg --remove $pkgs
+}
+
 has_command() {
   command -v "$1" > /dev/null 2>&1 || command -v "$1.bat" > /dev/null 2>&1 || command -v "$1.cmd" > /dev/null 2>&1
 }

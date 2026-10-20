@@ -151,6 +151,7 @@ runs:
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/check-sonarqube.sh"
 
     # A bal already on the path is used for latest, or when it is the version asked for.
+    # Otherwise a Ballerina installed from a .deb package is removed, so that setup-ballerina can install another.
     - name: Check for Ballerina
       id: bal
       if: steps.find.outputs.count != '0'
@@ -164,6 +165,7 @@ runs:
           set_output installed true
         else
           has_bal && echo "Ballerina $(bal_version) is on the path, but ballerina-version is $WANTED, so Ballerina $WANTED is installed."
+          remove_ballerina_debs
           set_output installed false
         fi
 
