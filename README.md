@@ -9,7 +9,7 @@ GitHub Action that runs [`bal scan`](https://ballerina.io/learn/scan-tool/) on t
 The action installs Ballerina and the scan tool, scans every package, and merges the reports into one SARIF 2.1.0 file with paths relative to the repository root. It leaves your files as they were: any file it changes during a scan is restored when that scan ends.
 
 > [!NOTE]
-> `v0` is a pre-release that uses scan tool 0.12.0. It tracks the latest `v0.x.y` release; pin a release tag such as `v0.1.0`, or a commit SHA, for reproducible runs. The inputs are stable, but `v1` will support scan tool 1.0.0 and later only, so `tool-version` values below 1.0.0 will not work with it. Rule IDs, severities and the findings reported may change with scan tool 1.0.0, so review `include-rules`, `exclude-rules`, `fail-on-severity` and `max-findings` when moving to `v1`.
+> `v0` is a pre-release. It tracks the latest `v0.x.y` release; pin a release tag such as `v0.1.0`, or a commit SHA, for reproducible runs. The inputs are stable. Unless `tool-version` is set, the action uses the latest scan tool compatible with the installed Ballerina, so a new scan tool release is picked up without a new action release. Set `tool-version` to keep the rule IDs, severities and findings that `include-rules`, `exclude-rules`, `fail-on-severity` and `max-findings` depend on fixed.
 
 ## Usage
 
