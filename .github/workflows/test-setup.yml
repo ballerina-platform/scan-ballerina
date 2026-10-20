@@ -7,6 +7,34 @@ permissions:
   contents: read
 
 jobs:
+  # Neither version is given, so the latest Ballerina and the latest compatible scan tool are used.
+  latest-versions:
+    name: Latest Ballerina and scan tool versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Scan
+        id: scan
+        uses: ./
+        with:
+          paths: test/projects/single
+
+      - name: Check the versions
+        shell: bash
+        env:
+          RESULT: ${{ steps.scan.outputs.result }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          at_least() { [ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]; }
+          [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
+          BAL="$(bal version | sed -n 's/^Ballerina \([0-9][^ ]*\).*/\1/p')"
+          TOOL="$(bal tool list | grep -E '^\|scan +\|' | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"
+          echo "Ballerina $BAL, bal scan $TOOL"
+          at_least "$BAL" 2201.13.0 || fail "Ballerina $BAL is older than 2201.13.0"
+          at_least "$TOOL" 0.12.0 || fail "bal scan $TOOL is older than 0.12.0"
+
   compatible-versions:
     name: Compatible Ballerina and scan tool versions
     runs-on: ubuntu-latest
@@ -39,57 +67,125 @@ jobs:
           bal version | grep -q '^Ballerina 2201\.13\.5 ' || fail "Ballerina 2201.13.5 is not the installed version"
           bal tool list | grep -Eq '^\|scan +\|0\.12\.0 ' || fail "bal scan 0.12.0 is not the active tool version"
 
-  incompatible-versions:
-    name: Scan tool version incompatible with Ballerina
+      # Only ballerina-version is given, so the latest scan tool compatible with it is installed.
+      - name: Scan with the latest compatible scan tool
+        id: latest-tool
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/single
+          category: latest-tool
+
+      - name: Check the scan tool version
+        shell: bash
+        env:
+          RESULT: ${{ steps.latest-tool.outputs.result }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          at_least() { [ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]; }
+          [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
+          bal version | grep -q '^Ballerina 2201\.13\.5 ' || fail "Ballerina 2201.13.5 is not the installed version"
+          TOOL="$(bal tool list | grep -E '^\|scan +\|' | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"
+          echo "bal scan $TOOL"
+          at_least "$TOOL" 0.12.0 || fail "bal scan $TOOL is older than 0.12.0"
+
+  version-selection:
+    name: Ballerina and scan tool version selection
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      # bal scan 0.12.0 needs Ballerina 2201.13 or later.
-      - name: Scan
-        id: scan
+      # Versions below the minimums are rejected before Ballerina or the scan tool is installed.
+      - name: Scan tool version below the minimum
+        id: old-tool-version
+        continue-on-error: true
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          tool-version: 0.11.0
+          paths: test/projects/single
+          category: old-tool-version
+
+      - name: Ballerina version below the minimum
+        id: old-ballerina-version
         continue-on-error: true
         uses: ./
         with:
           ballerina-version: 2201.12.0
-          tool-version: 0.12.0
           paths: test/projects/single
-          category: incompatible-versions
+          category: old-ballerina-version
           artifacts: true
 
-      - name: Check that the step failed
+      - name: Check that both steps failed before installing anything
         shell: bash
         env:
-          OUTCOME: ${{ steps.scan.outcome }}
-          RESULT: ${{ steps.scan.outputs.result }}
-          SARIF_FILE: ${{ steps.scan.outputs.sarif-file }}
+          STEPS: ${{ toJSON(steps) }}
+        run: |
+          set -euo pipefail
+          FAILURES=0
+          fail() { echo "::error::$1"; FAILURES=$((FAILURES + 1)); }
+          for id in old-tool-version old-ballerina-version; do
+            outcome="$(jq -r --arg id "$id" '.[$id].outcome' <<< "$STEPS")"
+            result="$(jq -r --arg id "$id" '.[$id].outputs.result // ""' <<< "$STEPS")"
+            sarif="$(jq -r --arg id "$id" '.[$id].outputs["sarif-file"] // ""' <<< "$STEPS")"
+            [ "$outcome" = failure ] || fail "$id: the step should fail, but its outcome is '$outcome'"
+            [ "$result" = error ] || fail "$id: result is '$result', expected error"
+            [ -z "$sarif" ] || fail "$id: sarif-file must be empty, got '$sarif'"
+          done
+          ! command -v bal > /dev/null || fail "Ballerina must not be installed when a version is below the minimum"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+      # A Ballerina older than the scan tool needs is on the path, as on a runner with an old Ballerina.
+      - name: Set up an old Ballerina
+        uses: ballerina-platform/setup-ballerina@585120e3f0e540bf127376ee6e75d39e8ce6aaa4 # v1.1.5
+        with:
+          version: 2201.12.0
+          github-token: ${{ github.token }}
+
+      # Only tool-version is given, and the bal on the path is too old for it, so the latest
+      # Ballerina is installed.
+      - name: Scan with an old Ballerina on the path
+        id: old-bal-on-path
+        uses: ./
+        with:
+          tool-version: 0.12.0
+          paths: test/projects/single
+          category: old-bal-on-path
+
+      - name: Check that the latest Ballerina was installed
+        shell: bash
+        env:
+          RESULT: ${{ steps.old-bal-on-path.outputs.result }}
         run: |
           set -euo pipefail
           fail() { echo "::error::$1"; exit 1; }
-          [ "$OUTCOME" = failure ] || fail "The step should fail, but its outcome is '$OUTCOME'"
-          [ "$RESULT" = error ] || fail "result is '$RESULT', expected error"
-          [ -z "$SARIF_FILE" ] || fail "sarif-file must be empty, got '$SARIF_FILE'"
-          bal version | grep -q '^Ballerina 2201\.12\.0 ' || fail "Ballerina 2201.12.0 is not the installed version"
+          at_least() { [ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]; }
+          [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
+          BAL="$(bal version | sed -n 's/^Ballerina \([0-9][^ ]*\).*/\1/p')"
+          at_least "$BAL" 2201.13.0 || fail "Ballerina $BAL is on the path, expected the latest Ballerina"
+          bal tool list | grep -Eq '^\|scan +\|0\.12\.0 ' || fail "bal scan 0.12.0 is not the active tool version"
 
-      # Ballerina 2201.12.0 is now on the path, but a pinned version must still be installed.
-      - name: Scan with a newer pinned version
-        id: pinned
+      # The latest Ballerina is on the path, so the version asked for must still be installed. It is
+      # the oldest Ballerina the scan tool supports.
+      - name: Scan with another Ballerina version
+        id: other-ballerina
         uses: ./
         with:
-          ballerina-version: 2201.13.5
+          ballerina-version: 2201.13.0
           tool-version: 0.12.0
           paths: test/projects/single
-          category: pinned-version
+          category: other-ballerina
 
-      - name: Check that the pinned version was installed
+      - name: Check that the Ballerina version asked for was installed
         shell: bash
         env:
-          RESULT: ${{ steps.pinned.outputs.result }}
+          RESULT: ${{ steps.other-ballerina.outputs.result }}
         run: |
           set -euo pipefail
           fail() { echo "::error::$1"; exit 1; }
           [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
-          bal version | grep -q '^Ballerina 2201\.13\.5 ' || fail "Ballerina 2201.13.5 is not the installed version"
+          bal version | grep -q '^Ballerina 2201\.13\.0 ' || fail "Ballerina 2201.13.0 is not the installed version"
 
   operating-systems:
     name: Scan on ${{ matrix.os }}

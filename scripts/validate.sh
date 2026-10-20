@@ -89,12 +89,23 @@ check_boolean job-summary "$(trim "${JOB_SUMMARY:-true}")"
 ARTIFACTS="$(trim "${ARTIFACTS:-false}")"
 check_boolean artifacts "$ARTIFACTS"
 
+# Versions below the minimums fail here, before anything is installed. Whether a given Ballerina
+# and scan tool version work together is known only to Ballerina Central, so a given pair that is
+# not compatible fails when the scan tool is installed.
 BALLERINA_VERSION="$(trim "${BALLERINA_VERSION:-latest}")"
-[[ "$BALLERINA_VERSION" =~ ^(latest|nightly.*|[0-9]+(\.[0-9]+)*([.-][A-Za-z0-9.-]+)?)$ ]] \
-  || error "ballerina-version must be 'latest' or a version such as 2201.13.3, got '$BALLERINA_VERSION'."
+if [[ ! "$BALLERINA_VERSION" =~ ^(latest|nightly.*|[0-9]+(\.[0-9]+)*([.-][A-Za-z0-9.-]+)?)$ ]]; then
+  error "ballerina-version must be 'latest' or a version such as 2201.13.3, got '$BALLERINA_VERSION'."
+elif [[ "$BALLERINA_VERSION" =~ ^[0-9]+\.[0-9]+ ]] && ! version_ge "$BALLERINA_VERSION" "$MIN_BALLERINA_VERSION"; then
+  error "ballerina-version is $BALLERINA_VERSION, but bal scan $MIN_TOOL_VERSION and later need Ballerina $MIN_BALLERINA_VERSION or later. Set $MIN_BALLERINA_VERSION or later, or leave it out to use the latest Ballerina."
+fi
 TOOL_VERSION="$(trim "${TOOL_VERSION:-}")"
-[ -z "$TOOL_VERSION" ] || [[ "$TOOL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]] \
-  || error "tool-version must be a version such as $PINNED_TOOL_VERSION, got '$TOOL_VERSION'."
+if [ -n "$TOOL_VERSION" ]; then
+  if [[ ! "$TOOL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
+    error "tool-version must be a version such as $MIN_TOOL_VERSION, got '$TOOL_VERSION'."
+  elif ! version_ge "$TOOL_VERSION" "$MIN_TOOL_VERSION"; then
+    error "tool-version is $TOOL_VERSION, but the oldest supported version is $MIN_TOOL_VERSION. Set $MIN_TOOL_VERSION or later, or leave it out to use the latest version compatible with the Ballerina version."
+  fi
+fi
 
 # Platform configuration
 if [ "$(jq -r 'type' <<< "$CONFIG")" != "object" ]; then
@@ -226,7 +237,7 @@ if selected sonarqube; then
   fi
   if [ "$SONARQUBE" = true ]; then
     while IFS= read -r v; do
-      [ -n "$v" ] && log_warning "platform-config.sonarqube sets plugin-version to latest, which may not match the pinned scan tool. Pin a plugin version for reproducible runs."
+      [ -n "$v" ] && log_warning "platform-config.sonarqube sets plugin-version to latest, which may not match the scan tool. Pin a plugin version for reproducible runs."
     done < <(jq -r '.sonarqube | select(type == "object")
       | [(., (.packages // [] | select(type == "array") | .[] | select(type == "object")))
          | select(."plugin-version" == "latest")] | if length > 0 then "latest" else empty end' <<< "$CONFIG")

@@ -61,7 +61,7 @@ jobs:
   # checked from this job.
   annotation-checks:
     name: Check the annotations
-    needs: [reporting, sonarqube, scan-toml]
+    needs: [setup, reporting, sonarqube, scan-toml]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
@@ -85,6 +85,29 @@ jobs:
             || fail "annotations=true must annotate the ballerina:1 finding in test/projects/multi/orders/main.bal"
           jq -e 'any(.path | startswith("test/projects/multi/payments/")) | not' <<< "$ANNOTATIONS" > /dev/null \
             || fail "annotations=false must not annotate findings"
+
+      - name: Check the errors of the versions below the minimums
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # The error each step must report, by step ID, which is also its category.
+          EXPECTED: |
+            {
+              "old-tool-version": "tool-version is 0.11.0, but the oldest supported version is 0.12.0",
+              "old-ballerina-version": "ballerina-version is 2201.12.0, but bal scan 0.12.0 and later need Ballerina 2201.13.0 or later"
+            }
+        run: |
+          set -euo pipefail
+          FAILURES=0
+          fail() { echo "::error::$1"; FAILURES=$((FAILURES + 1)); }
+          ANNOTATIONS="$(bash .github/scripts/annotations.sh 'Setup / Ballerina and scan tool version selection')"
+          jq . <<< "$ANNOTATIONS"
+          while IFS=$'\t' read -r id message; do
+            jq -e --arg c "bal scan ($id)" --arg m "$message" \
+              'any(.[]; .title == $c and .annotation_level == "failure" and (.message | contains($m)))' \
+              <<< "$ANNOTATIONS" > /dev/null || fail "$id: no error containing: $message"
+          done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<< "$EXPECTED")
+          [ "$FAILURES" -eq 0 ] || exit 1
 
       - name: Check the errors of the invalid SonarQube settings
         shell: bash

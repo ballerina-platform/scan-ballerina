@@ -7,11 +7,11 @@ branding:
 
 inputs:
   ballerina-version:
-    description: 'Ballerina version to install. latest uses the Ballerina already on the path, if there is one; any other version is installed unless it is the one on the path. Pin a version for reproducible runs.'
+    description: 'Ballerina version to install, 2201.13.0 or later. latest uses the Ballerina already on the path if it is 2201.13.0 or later, and installs the latest Ballerina otherwise; any other version is installed unless it is the one on the path. Pin a version for reproducible runs.'
     required: false
     default: 'latest'
   tool-version:
-    description: 'bal scan tool version. Empty uses the version pinned by this release of the action.'
+    description: 'bal scan tool version, 0.12.0 or later. Empty uses the latest version compatible with the Ballerina version.'
     required: false
     default: ''
   platforms:
@@ -150,7 +150,7 @@ runs:
         CATEGORY: ${{ inputs.category }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/check-sonarqube.sh"
 
-    # A bal already on the path is used for latest, or when it is the version asked for.
+    # A bal already on the path is used for latest if it can run the scan tool, or when it is the version asked for.
     # Otherwise a Ballerina installed from a .deb package is removed, so that setup-ballerina can install another.
     - name: Check for Ballerina
       id: bal
@@ -164,7 +164,11 @@ runs:
         if bal_matches "$WANTED"; then
           set_output installed true
         else
-          has_bal && echo "Ballerina $(bal_version) is on the path, but ballerina-version is $WANTED, so Ballerina $WANTED is installed."
+          if has_bal && [ "$WANTED" = latest ]; then
+            echo "Ballerina $(bal_version) is on the path, but the scan tool needs $MIN_BALLERINA_VERSION or later, so the latest Ballerina is installed."
+          elif has_bal; then
+            echo "Ballerina $(bal_version) is on the path, but ballerina-version is $WANTED, so Ballerina $WANTED is installed."
+          fi
           remove_ballerina_debs
           set_output installed false
         fi

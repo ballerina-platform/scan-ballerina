@@ -9,9 +9,12 @@
 
 set -euo pipefail
 
-# The scan tool version an action release pins, and the oldest Ballerina distribution it runs on.
-PINNED_TOOL_VERSION="0.12.0"
-MIN_BALLERINA_VERSION="2201.13.2"
+# The oldest scan tool version the action works with, and the oldest Ballerina distribution that
+# runs it. A scan tool runs on the distribution update it was built with and on later ones, so
+# bal scan 0.12.0, built with 2201.13.2, needs 2201.13.0 or later. Nothing is pinned: an empty
+# tool-version installs the latest scan tool compatible with the installed Ballerina.
+MIN_TOOL_VERSION="0.12.0"
+MIN_BALLERINA_VERSION="2201.13.0"
 
 # The SonarQube platform plugin of the scan tool, published to GitHub Packages, which needs a token
 # with read:packages even for public packages. Older plugin versions do not work with the pinned
@@ -178,14 +181,19 @@ bal_version() {
   bal_cmd version 2> /dev/null | tr -d '\r' | sed -n 's/^Ballerina \([0-9][^ ]*\).*/\1/p' | head -n1
 }
 
-# Succeeds when the bal on the path can be used for ballerina-version $1: any version for latest,
-# otherwise only the version given, or one within it, such as 2201.13.5 for 2201.13.
+# Succeeds when the bal on the path can be used for ballerina-version $1: for latest, any version
+# from MIN_BALLERINA_VERSION on, otherwise only the version given, or one within it, such as
+# 2201.13.5 for 2201.13.
 bal_matches() {
   local current
   has_bal || return 1
-  [ "$1" = latest ] && return 0
   current="$(bal_version)"
-  [ -n "$current" ] && { [ "$current" = "$1" ] || [[ "$current" == "$1".* ]]; }
+  [ -n "$current" ] || return 1
+  if [ "$1" = latest ]; then
+    version_ge "$current" "$MIN_BALLERINA_VERSION"
+  else
+    [ "$current" = "$1" ] || [[ "$current" == "$1".* ]]
+  fi
 }
 
 # Removes the Ballerina distributions installed from .deb packages. Each version is its own package
