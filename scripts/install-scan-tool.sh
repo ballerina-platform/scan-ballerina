@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Steps 4 and 5: checks the Ballerina version and installs the scan tool.
 #
-# An empty tool-version installs the latest scan tool compatible with the installed Ballerina,
-# which Ballerina Central picks. A given tool-version is pulled only when it is missing or a
-# different version is active, so the action can run more than once in a job.
+# An empty tool-version resolves to the latest scan tool Ballerina Central picks for the installed
+# Ballerina, which is then installed like a given tool-version.
 #
 # Inputs (environment): TOOL_VERSION (empty uses the latest compatible version), CATEGORY.
 # Outputs: ballerina-version, tool-version.
@@ -24,24 +23,39 @@ active_version() {
     | head -n1
 }
 
+# Prints the latest scan tool version compatible with Ballerina $1, cached once per job.
+latest_compatible_version() {
+  local cache version
+  cache="$(tool_cache_dir)/scan-tool-for-ballerina-$1"
+  if [ -s "$cache" ]; then
+    cat "$cache"
+    return
+  fi
+  version="$(curl -fsSL --proto '=https' --retry 3 -H "User-Agent: $1" -H "Ballerina-Platform: $CENTRAL_PLATFORM" \
+    "$CENTRAL_TOOLS_URL/scan" | jq -r '.version // empty')" || return 1
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || return 1
+  printf '%s' "$version" > "$cache"
+  printf '%s' "$version"
+}
+
 WANTED="$(trim "${TOOL_VERSION:-}")"
 ACTIVE="$(active_version)"
+HINT="Check that tool-version names a published version that supports Ballerina $BAL_VERSION: a scan tool runs on the Ballerina update it was built with and later ones. Leave tool-version out to use the latest compatible version."
 if [ -z "$WANTED" ]; then
-  echo "::group::Install the latest bal scan compatible with Ballerina $BAL_VERSION"
-  OUTPUT="$(bal_cmd tool pull scan 2>&1)" || true
-  printf '%s\n' "$OUTPUT"
-  # A higher version that is already active, such as one an earlier run in the job installed for a
-  # newer Ballerina, stays active after the pull, so the version Central picked is made active.
-  PULLED="$(tr -d '\r' <<< "$OUTPUT" | sed -n "s/.*tool 'scan:\([0-9][^']*\)'.*/\1/p" | head -n1)"
-  if [ -n "$PULLED" ] && [ "$PULLED" != "$(active_version)" ]; then
-    bal_cmd tool use "scan:$PULLED" || true
+  if WANTED="$(latest_compatible_version "$BAL_VERSION")"; then
+    echo "The latest bal scan compatible with Ballerina $BAL_VERSION is $WANTED."
+  elif [ -n "$ACTIVE" ] && version_ge "$ACTIVE" "$MIN_TOOL_VERSION"; then
+    log_warning "Could not ask Ballerina Central for the latest bal scan compatible with Ballerina $BAL_VERSION, so the active version $ACTIVE is used. Set tool-version to choose the version."
+    WANTED="$ACTIVE"
+  else
+    die "Could not ask Ballerina Central for the latest bal scan compatible with Ballerina $BAL_VERSION. Set tool-version to install a given version."
   fi
-  echo "::endgroup::"
-  ACTIVE="$(active_version)"
-  [ -n "$ACTIVE" ] || die "Could not install bal scan from Ballerina Central for Ballerina $BAL_VERSION."
-  version_ge "$ACTIVE" "$MIN_TOOL_VERSION" \
-    || die "The latest bal scan compatible with Ballerina $BAL_VERSION is $ACTIVE, but the oldest supported version is $MIN_TOOL_VERSION. Set ballerina-version to $MIN_BALLERINA_VERSION or later."
-elif [ "$ACTIVE" != "$WANTED" ]; then
+  version_ge "$WANTED" "$MIN_TOOL_VERSION" \
+    || die "The latest bal scan compatible with Ballerina $BAL_VERSION is $WANTED, but the oldest supported version is $MIN_TOOL_VERSION. Set tool-version to $MIN_TOOL_VERSION or a later version that supports Ballerina $BAL_VERSION."
+  HINT="Ballerina Central picked it as the latest version compatible with Ballerina $BAL_VERSION. Set tool-version to install a given version."
+fi
+
+if [ "$ACTIVE" != "$WANTED" ]; then
   echo "::group::Install bal scan $WANTED"
   # 'bal tool use' switches to a version that is already pulled. 'bal tool pull' fails for one
   # that is already active, so it runs only when the switch did not work. Neither exit code is
@@ -53,7 +67,7 @@ elif [ "$ACTIVE" != "$WANTED" ]; then
     ACTIVE="$(active_version)"
   fi
   echo "::endgroup::"
-  [ "$ACTIVE" = "$WANTED" ] || die "Could not install bal scan $WANTED for Ballerina $BAL_VERSION (active version: ${ACTIVE:-none}). Check that tool-version names a published version that supports Ballerina $BAL_VERSION: a scan tool runs on the Ballerina update it was built with and later ones. Leave tool-version out to use the latest compatible version."
+  [ "$ACTIVE" = "$WANTED" ] || die "Could not install bal scan $WANTED for Ballerina $BAL_VERSION (active version: ${ACTIVE:-none}). $HINT"
 fi
 
 echo "Using bal scan $ACTIVE on Ballerina $BAL_VERSION"

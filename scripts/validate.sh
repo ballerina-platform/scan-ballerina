@@ -89,13 +89,12 @@ check_boolean job-summary "$(trim "${JOB_SUMMARY:-true}")"
 ARTIFACTS="$(trim "${ARTIFACTS:-false}")"
 check_boolean artifacts "$ARTIFACTS"
 
-# Versions below the minimums fail here, before anything is installed. Whether a given Ballerina
-# and scan tool version work together is known only to Ballerina Central, so a given pair that is
-# not compatible fails when the scan tool is installed.
+# Versions below the minimums fail before anything is installed. Whether a pair is compatible is
+# checked when the scan tool is installed.
 BALLERINA_VERSION="$(trim "${BALLERINA_VERSION:-latest}")"
 if [[ ! "$BALLERINA_VERSION" =~ ^(latest|nightly.*|[0-9]+(\.[0-9]+)*([.-][A-Za-z0-9.-]+)?)$ ]]; then
   error "ballerina-version must be 'latest' or a version such as 2201.13.3, got '$BALLERINA_VERSION'."
-elif [[ "$BALLERINA_VERSION" =~ ^[0-9]+\.[0-9]+ ]] && ! version_ge "$BALLERINA_VERSION" "$MIN_BALLERINA_VERSION"; then
+elif [[ "$BALLERINA_VERSION" =~ ^[0-9] ]] && ! version_ge "$BALLERINA_VERSION" "$MIN_BALLERINA_VERSION"; then
   error "ballerina-version is $BALLERINA_VERSION, but bal scan $MIN_TOOL_VERSION and later need Ballerina $MIN_BALLERINA_VERSION or later. Set $MIN_BALLERINA_VERSION or later, or leave it out to use the latest Ballerina."
 fi
 TOOL_VERSION="$(trim "${TOOL_VERSION:-}")"
@@ -213,7 +212,7 @@ if selected sonarqube; then
   while IFS=$'\t' read -r where v; do
     [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || continue
     version_ge "$v" "$MIN_SONAR_PLUGIN_VERSION" \
-      || error "$where.plugin-version is $v, but the oldest supported version is $MIN_SONAR_PLUGIN_VERSION. Set $MIN_SONAR_PLUGIN_VERSION or later, or leave it out to use the pinned version $PINNED_SONAR_PLUGIN_VERSION."
+      || error "$where.plugin-version is $v, but the oldest supported version is $MIN_SONAR_PLUGIN_VERSION. Set $MIN_SONAR_PLUGIN_VERSION or later, or leave it out to use the newest plugin that works with the scan tool."
   done < <(jq -r '.sonarqube // {} | select(type == "object")
     | (["platform-config.sonarqube", ."plugin-version"]),
       (.packages // [] | select(type == "array") | to_entries[] | select(.value | type == "object")

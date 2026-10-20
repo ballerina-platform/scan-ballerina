@@ -187,6 +187,32 @@ jobs:
           [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
           bal version | grep -q '^Ballerina 2201\.13\.0 ' || fail "Ballerina 2201.13.0 is not the installed version"
 
+      # The version Central picks is already pulled, but another version is active, so the pick
+      # must be made active again.
+      - name: Make another scan tool version active
+        shell: bash
+        run: bal tool pull scan:0.11.0
+
+      - name: Scan with the latest compatible scan tool
+        id: pulled-pick
+        uses: ./
+        with:
+          ballerina-version: 2201.13.0
+          paths: test/projects/single
+          category: pulled-pick
+
+      - name: Check that the version Central picked was made active
+        shell: bash
+        env:
+          RESULT: ${{ steps.pulled-pick.outputs.result }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
+          bal tool list | grep -Eq '^\|scan +\|0\.12\.0 ' || fail "bal scan 0.12.0 is not the active tool version"
+          [ "$(cat "$RUNNER_TEMP/scan-ballerina-tools/scan-tool-for-ballerina-2201.13.0")" = 0.12.0 ] \
+            || fail "The version Central picked was not kept in the tool cache"
+
   operating-systems:
     name: Scan on ${{ matrix.os }}
     strategy:

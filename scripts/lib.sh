@@ -9,27 +9,63 @@
 
 set -euo pipefail
 
-# The oldest scan tool version the action works with, and the oldest Ballerina distribution that
-# runs it. A scan tool runs on the distribution update it was built with and on later ones, so
-# bal scan 0.12.0, built with 2201.13.2, needs 2201.13.0 or later. Nothing is pinned: an empty
-# tool-version installs the latest scan tool compatible with the installed Ballerina.
+# The oldest supported scan tool, and the oldest Ballerina that runs it.
 MIN_TOOL_VERSION="0.12.0"
 MIN_BALLERINA_VERSION="2201.13.0"
 
-# The SonarQube platform plugin of the scan tool, published to GitHub Packages, which needs a token
-# with read:packages even for public packages. Older plugin versions do not work with the pinned
-# scan tool, so plugin-version cannot go below the minimum.
-PINNED_SONAR_PLUGIN_VERSION="0.3.0"
+# The Central API 'bal tool pull scan' uses to pick the latest scan tool for a Ballerina version.
+CENTRAL_TOOLS_URL="https://api.central.ballerina.io/2.0/registry/tools"
+CENTRAL_PLATFORM="java21"
+
+# The SonarQube platform plugin, published to GitHub Packages, which needs a token with
+# read:packages. Older versions do not work with the supported scan tools.
 MIN_SONAR_PLUGIN_VERSION="0.3.0"
 SONAR_PLUGIN_URL="https://maven.pkg.github.com/ballerina-platform/sonar-ballerina/io/ballerina/sonar/sonar-platform-plugin/{version}/sonar-platform-plugin-{version}.jar"
 
-# The SHA-256 of each platform plugin version this release can verify, including the pinned one.
-# The plugin runs with the SonarQube token, so a downloaded JAR must match before it is used.
+# Known plugin versions, newest first: version, oldest scan tool it works with, first scan tool it
+# is not known to work with, and the SHA-256 a download must match.
+SONAR_PLUGINS="\
+0.3.0 0.12.0 0.13.0 b1e962ecc2e5337d92f7a8043089f40e1f284f2133328835d6c4987322ea98a5
+"
+
+# Prints the SHA-256 of platform plugin version $1, failing when this release does not know it.
 sonar_plugin_sha256() {
-  case "$1" in
-    0.3.0) echo b1e962ecc2e5337d92f7a8043089f40e1f284f2133328835d6c4987322ea98a5 ;;
-    *) return 1 ;;
-  esac
+  awk -v v="$1" '$1 == v { print $4; found = 1 } END { exit !found }' <<< "$SONAR_PLUGINS"
+}
+
+# Prints whether plugin version $1 works with scan tool version $2: supported, too-old (the tool is
+# older than the plugin needs), untested (newer than it is known to work with) or unknown.
+sonar_plugin_support() {
+  local plugin tool below
+  while read -r plugin tool below _; do
+    [ "$plugin" = "$1" ] || continue
+    if ! version_ge "$2" "$tool"; then
+      echo too-old
+    elif version_ge "$2" "$below"; then
+      echo untested
+    else
+      echo supported
+    fi
+    return
+  done <<< "$SONAR_PLUGINS"
+  echo unknown
+}
+
+# Prints the newest known plugin version that works with scan tool version $1, if any.
+sonar_plugin_for_tool() {
+  local plugin
+  while read -r plugin _; do
+    [ -n "$plugin" ] || continue
+    if [ "$(sonar_plugin_support "$plugin" "$1")" = supported ]; then
+      printf '%s' "$plugin"
+      return
+    fi
+  done <<< "$SONAR_PLUGINS"
+}
+
+# Prints the newest platform plugin version this release knows.
+newest_sonar_plugin() {
+  awk 'NF { print $1; exit }' <<< "$SONAR_PLUGINS"
 }
 
 # The SonarScanner CLI an action release pins, with the SHA-256 of each distribution. Each one
@@ -181,9 +217,8 @@ bal_version() {
   bal_cmd version 2> /dev/null | tr -d '\r' | sed -n 's/^Ballerina \([0-9][^ ]*\).*/\1/p' | head -n1
 }
 
-# Succeeds when the bal on the path can be used for ballerina-version $1: for latest, any version
-# from MIN_BALLERINA_VERSION on, otherwise only the version given, or one within it, such as
-# 2201.13.5 for 2201.13.
+# Succeeds when the bal on the path can be used for ballerina-version $1: latest, a version, or a
+# prefix of one, such as 2201.13.
 bal_matches() {
   local current
   has_bal || return 1
@@ -216,18 +251,24 @@ has_command() {
   command -v "$1" > /dev/null 2>&1 || command -v "$1.bat" > /dev/null 2>&1 || command -v "$1.cmd" > /dev/null 2>&1
 }
 
-# Succeeds when version $1 is greater than or equal to version $2. Compares the leading numeric
-# dot-separated parts, so 2201.13.2-20261001 compares as 2201.13.2.
+# Succeeds when version $1 is greater than or equal to version $2. A suffix such as -alpha marks a
+# pre-release, which is lower than its release.
 version_ge() {
-  local a b i
-  IFS=. read -ra a <<< "$(sed -E 's/^([0-9]+(\.[0-9]+)*).*/\1/' <<< "$1")"
-  IFS=. read -ra b <<< "$(sed -E 's/^([0-9]+(\.[0-9]+)*).*/\1/' <<< "$2")"
+  local na nb sa sb a b i
+  na="$(sed -E 's/^([0-9]+(\.[0-9]+)*).*/\1/' <<< "$1")"
+  nb="$(sed -E 's/^([0-9]+(\.[0-9]+)*).*/\1/' <<< "$2")"
+  sa="${1#"$na"}"
+  sb="${2#"$nb"}"
+  IFS=. read -ra a <<< "$na"
+  IFS=. read -ra b <<< "$nb"
   for ((i = 0; i < ${#a[@]} || i < ${#b[@]}; i++)); do
     local x="${a[i]:-0}" y="${b[i]:-0}"
     ((10#$x > 10#$y)) && return 0
     ((10#$x < 10#$y)) && return 1
   done
-  return 0
+  [ -z "$sa" ] && return 0
+  [ -z "$sb" ] && return 1
+  [[ ! "$sa" < "$sb" ]]
 }
 
 # Parses the platform-config input (YAML or JSON) and prints it as compact JSON, "{}" when empty.

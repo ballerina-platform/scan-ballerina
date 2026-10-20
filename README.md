@@ -194,7 +194,7 @@ The fields at the platform level are the defaults for every scanned package. An 
 | Field | Required | Description |
 | --- | --- | --- |
 | `plugin-path` | No | Platform plugin JAR, as a path relative to the repository root or an `https` URL. Overrides `path` in `Scan.toml`. Cannot be used with `plugin-version`. |
-| `plugin-version` | No | Platform plugin version to download, `0.3.0` or later, or `latest`. Overrides `path` in `Scan.toml`. `latest` warns, since it may not match the scan tool. |
+| `plugin-version` | No | Platform plugin version to download, `0.3.0` or later, or `latest`. Overrides `path` in `Scan.toml`. A version this release knows fails when it does not work with the installed scan tool. `latest` warns, since it may not match the scan tool. |
 | `properties-file` | No | Properties file, relative to the repository root. Overrides `sonarProjectPropertiesPath` in `Scan.toml`. |
 | `host-url` | Yes, unless set under `packages` or in the properties file | SonarQube server URL. Must be `https`. Overrides `sonar.host.url`. |
 | `token` | Yes, unless set under `packages` | Token for submitting analyses. Pass it from a secret. |
@@ -204,7 +204,7 @@ The fields at the platform level are the defaults for every scanned package. An 
 
 Each setting of a package is resolved field by field: its `packages` item, then the platform level, then the package's `Scan.toml` and properties file. Paths in `platform-config` are relative to the repository root, and paths in `Scan.toml` are relative to the package.
 
-- **Platform plugin:** `plugin-path` or `plugin-version`, otherwise the `path` of the `sonarqube` `[[platform]]` entry in `Scan.toml` (a relative path or an `https` URL), otherwise the version this release pins. An absolute path fails, since it points to one machine. A `plugin-path` or `plugin-version` in an item replaces both platform-level fields.
+- **Platform plugin:** `plugin-path` or `plugin-version`, otherwise the `path` of the `sonarqube` `[[platform]]` entry in `Scan.toml` (a relative path or an `https` URL), otherwise the newest version this release knows to work with the installed scan tool. An absolute path fails, since it points to one machine. A `plugin-path` or `plugin-version` in an item replaces both platform-level fields.
 - **Properties file:** `properties-file`, otherwise `sonarProjectPropertiesPath` in `Scan.toml`, otherwise `sonar-project.properties` in the package root, if it exists.
 - **Server and token:** an item that sets `host-url` must also set `token`, so a token is never sent to a server it was not configured for. For the same reason, a package that takes its server URL from `sonar.host.url` in its properties file must set its own `token` under `packages`: the platform-level token goes only to a `host-url` in `platform-config`. Every URL must be `https`, including one from the properties file.
 - **Project:** each package is a separate SonarQube analysis, so packages on the same server need different project keys. `project-key` and `project-name` at the platform level are for a scan of one package, counted after `exclude-paths`: with more packages they fail, so set them for each package under `packages`. With one package, setting the same field at the platform level and in its item also fails.
@@ -280,7 +280,7 @@ The action is a composite action. Its logic is in the shell and `jq` scripts in 
 2. `find-packages.sh` finds the packages and workspaces in `paths`, skipping `target`, `build` and `.git`. A workspace is scanned once from its root. It checks each package's `Scan.toml` setting, and downloads a remote `Scan.toml`.
 3. `check-sonarqube.sh` resolves each package's SonarQube settings.
 4. [`setup-ballerina`](https://github.com/ballerina-platform/setup-ballerina) installs Ballerina, unless `bal` is already on the path and `ballerina-version` is its version, or `latest` with a `bal` of `2201.13.0` or later. On Linux, a Ballerina installed from a `.deb` package is removed first, since `dpkg` cannot install another version over it.
-5. `install-scan-tool.sh` installs the scan tool: the `tool-version` given, unless it is already active, or else the latest version compatible with the installed Ballerina, which Ballerina Central picks. With SonarQube, `install-sonarqube.sh` downloads the platform plugin and the SonarScanner CLI, once per job.
+5. `install-scan-tool.sh` installs the scan tool: the `tool-version` given, or else the latest version compatible with the installed Ballerina, which Ballerina Central picks and the action asks for once per Ballerina version in a job. It is pulled only when it is missing, and made active when another version is. With SonarQube, `install-sonarqube.sh` downloads the platform plugin, checked against the installed scan tool, and the SonarScanner CLI, once per job.
 6. `scan.sh` runs `bal scan --format=sarif` on each package, and with SonarQube `bal scan --platforms=sonarqube`.
 7. `merge-sarif.sh` normalizes the paths, drops filtered findings and merges the reports into one run.
 8. `github/codeql-action/upload-sarif` uploads the SARIF file to code scanning.
@@ -301,7 +301,7 @@ The action runs on GitHub-hosted Ubuntu, macOS and Windows runners, where it use
 
 ## Security
 
-- `setup-ballerina`, `upload-sarif` and `upload-artifact` are pinned by full commit SHA, which Dependabot keeps up to date. The scan tool is the latest version compatible with the Ballerina version unless `tool-version` pins one. `yq`, when the runner has none, and the SonarQube platform plugin and the SonarScanner CLI are downloaded at the versions this release pins, and their SHA-256 is verified. A `plugin-version` this release has no checksum for, and a plugin given as an `https` URL, are downloaded with a warning, since they cannot be verified.
+- `setup-ballerina`, `upload-sarif` and `upload-artifact` are pinned by full commit SHA, which Dependabot keeps up to date. The scan tool is the latest version compatible with the Ballerina version unless `tool-version` pins one. `yq`, when the runner has none, the SonarQube platform plugin and the SonarScanner CLI are downloaded at versions this release knows, and their SHA-256 is verified. A `plugin-version` this release has no checksum for, and a plugin given as an `https` URL, are downloaded with a warning, since they cannot be verified.
 - Inputs reach the scripts as environment variables and are never interpolated into scripts.
 - Every `token` in `platform-config`, at the platform level and under each `packages` item, is masked, and `platform-config` is never printed. Each package's token goes to that package's scan only.
 - The action needs only `contents: read`. With `github-code-scanning`, it also needs `security-events: write`, and `actions: read` in private repositories. With `sonarqube` and the default plugin, it also needs `packages: read`.

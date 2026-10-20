@@ -164,10 +164,16 @@ runs:
         if bal_matches "$WANTED"; then
           set_output installed true
         else
-          if has_bal && [ "$WANTED" = latest ]; then
-            echo "Ballerina $(bal_version) is on the path, but the scan tool needs $MIN_BALLERINA_VERSION or later, so the latest Ballerina is installed."
+          CURRENT=""
+          has_bal && CURRENT="$(bal_version)"
+          INSTALLED="Ballerina $WANTED"
+          [ "$WANTED" != latest ] || INSTALLED="the latest Ballerina"
+          if has_bal && [ -z "$CURRENT" ]; then
+            echo "A bal command is on the path, but its version could not be read from 'bal version', so $INSTALLED is installed."
+          elif has_bal && [ "$WANTED" = latest ]; then
+            echo "Ballerina $CURRENT is on the path, but the scan tool needs $MIN_BALLERINA_VERSION or later, so the latest Ballerina is installed."
           elif has_bal; then
-            echo "Ballerina $(bal_version) is on the path, but ballerina-version is $WANTED, so Ballerina $WANTED is installed."
+            echo "Ballerina $CURRENT is on the path, but ballerina-version is $WANTED, so Ballerina $WANTED is installed."
           fi
           remove_ballerina_debs
           set_output installed false
@@ -196,6 +202,7 @@ runs:
       shell: bash
       env:
         SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
+        SCAN_TOOL_VERSION: ${{ steps.tool.outputs.tool-version }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
         CATEGORY: ${{ inputs.category }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/install-sonarqube.sh"

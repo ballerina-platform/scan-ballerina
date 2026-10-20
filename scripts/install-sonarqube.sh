@@ -7,15 +7,19 @@
 # the job needs no Java or scanner setup step. Its checksum is verified against the one this
 # release pins, and so is the checksum of a platform plugin version this release knows.
 #
-# Inputs (environment): SCAN_WORK_DIR, GITHUB_TOKEN (reads the plugin from GitHub Packages),
-# CATEGORY.
-# Writes: "plugin-file" into each item of $SCAN_WORK_DIR/sonarqube.json.
+# The default plugin, and any plugin-version, is checked against the installed scan tool.
+#
+# Inputs (environment): SCAN_WORK_DIR, SCAN_TOOL_VERSION (the installed scan tool), GITHUB_TOKEN
+# (reads the plugin from GitHub Packages), CATEGORY.
+# Writes: "plugin-file", and the resolved default plugin, into each item of
+# $SCAN_WORK_DIR/sonarqube.json.
 # Outputs: scanner-bin, the directory to put on the path of the scan process.
 
 # shellcheck source=lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 WORK="${SCAN_WORK_DIR:?SCAN_WORK_DIR is not set}"
+TOOL="${SCAN_TOOL_VERSION:?SCAN_TOOL_VERSION is not set}"
 ROOT="$(workspace_root)"
 CACHE="$(tool_cache_dir)"
 
@@ -26,10 +30,42 @@ download_package() {
 
 PACKAGES_HINT="The plugin is published to GitHub Packages, which needs a token with read:packages: give the job 'packages: read' permission, or pass github-token. You can also set plugin-path to a JAR in the repository or an https URL."
 
-# Prints the cached JAR of a plugin version, downloading it when it is not cached yet. It runs in a
-# subshell, so errors go to stderr.
+# Prints the newest known plugin version that works with the installed scan tool, or the newest
+# known one with a warning. Runs in a subshell, so messages go to stderr.
+default_plugin_version() {
+  local version
+  version="$(sonar_plugin_for_tool "$TOOL")"
+  if [ -z "$version" ]; then
+    version="$(newest_sonar_plugin)"
+    [ "$(sonar_plugin_support "$version" "$TOOL")" = untested ] \
+      || die "This release of the action knows no SonarQube platform plugin that works with bal scan $TOOL. Set plugin-version or plugin-path." >&2
+    log_warning "This release of the action knows no SonarQube platform plugin for bal scan $TOOL, so version $version, made for an older scan tool, is used. Set plugin-version or plugin-path to use another plugin, or tool-version to pin the scan tool." >&2
+  fi
+  echo "SonarQube platform plugin for bal scan $TOOL: $version" >&2
+  printf '%s' "$version"
+}
+
+# Fails or warns when a known plugin version does not work with the installed scan tool.
+check_plugin_version() {
+  local version="$1" newest
+  newest="$(sonar_plugin_for_tool "$TOOL")"
+  case "$(sonar_plugin_support "$version" "$TOOL")" in
+    too-old)
+      die "Version $version of the SonarQube platform plugin needs a later scan tool than bal scan $TOOL. Leave plugin-version out to use the newest plugin that works with bal scan $TOOL, or set tool-version to a later scan tool." >&2
+      ;;
+    untested)
+      if [ -n "$newest" ]; then
+        die "Version $version of the SonarQube platform plugin does not work with bal scan $TOOL, which needs version $newest. Set plugin-version to $newest, or leave it out to use it." >&2
+      fi
+      log_warning "Version $version of the SonarQube platform plugin is not known to work with bal scan $TOOL, which is newer than this release of the action knows. Set tool-version to pin the scan tool if the scan fails." >&2
+      ;;
+  esac
+}
+
+# Prints the cached JAR of a plugin version, downloading it when needed. $2 is true when it was
+# already checked against the scan tool. Runs in a subshell, so errors go to stderr.
 plugin_version_file() {
-  local version="$1"
+  local version="$1" checked="${2:-false}"
   if [ "$version" = latest ]; then
     local base="${SONAR_PLUGIN_URL%%/\{version\}*}" metadata="$CACHE/sonar-platform-plugin-metadata.xml"
     download_package "$base/maven-metadata.xml" "$metadata" \
@@ -52,8 +88,9 @@ plugin_version_file() {
       rm -f "$file"
       die "Version $version of the SonarQube platform plugin has the SHA-256 $actual, but $expected was expected." >&2
     fi
+    [ "$checked" = true ] || check_plugin_version "$version"
   else
-    log_warning "This release of the action has no checksum for version $version of the SonarQube platform plugin, so the download is not verified. Leave plugin-version out to use the pinned version $PINNED_SONAR_PLUGIN_VERSION, which is verified." >&2
+    log_warning "This release of the action does not know version $version of the SonarQube platform plugin, so neither the download nor whether it works with bal scan $TOOL is verified. Leave plugin-version out to use a verified version that works with the scan tool." >&2
   fi
   printf '%s' "$file"
 }
@@ -75,6 +112,11 @@ while IFS= read -r settings; do
   kind="$(jq -r '.plugin.kind' <<< "$settings")"
   value="$(jq -r '.plugin.value' <<< "$settings")"
   case "$kind" in
+    default)
+      value="$(default_plugin_version)"
+      settings="$(jq -c --arg v "$value" '.plugin = {kind: "version", value: $v}' <<< "$settings")"
+      file="$(plugin_version_file "$value" true)"
+      ;;
     version) file="$(plugin_version_file "$value")" ;;
     url) file="$(plugin_url_file "$value")" ;;
     file) file="$ROOT/$value" ;;

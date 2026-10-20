@@ -11,8 +11,8 @@
 # Writes: $SCAN_WORK_DIR/sonarqube.json, a list of {package, scan-toml, scan-toml-kind, plugin,
 # properties-file, host-url, project-key, project-name}. scan-toml-kind is file, remote (scan-toml
 # is then the downloaded copy), or none when the package has no Scan.toml. plugin is {kind, value},
-# where kind is version, file or url. Tokens are not written; scan.sh reads them from
-# PLATFORM_CONFIG.
+# where kind is version, file, url, or default (resolved by install-sonarqube.sh). Tokens are not
+# written; scan.sh reads them from PLATFORM_CONFIG.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -121,7 +121,7 @@ while IFS= read -r unit; do
   else
     entry_path="$(jq -r '.path // "" | tostring' <<< "$entry")"
     if [ -z "$entry_path" ]; then
-      plugin="$(jq -nc --arg v "$PINNED_SONAR_PLUGIN_VERSION" '{kind: "version", value: $v}')"
+      plugin='{"kind":"default"}'
     elif [[ "$entry_path" =~ ^https:// ]]; then
       plugin="$(jq -nc --arg v "$entry_path" '{kind: "url", value: $v}')"
     elif [[ "$entry_path" =~ ^[a-zA-Z][a-zA-Z0-9+.-]*:// ]]; then
