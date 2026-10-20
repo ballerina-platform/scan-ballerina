@@ -1,0 +1,133 @@
+name: Setup
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  compatible-versions:
+    name: Compatible Ballerina and scan tool versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Scan
+        id: scan
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          tool-version: 0.12.0
+          paths: test/projects/single
+          artifacts: true
+
+      - name: Check the result
+        shell: bash
+        env:
+          RESULT: ${{ steps.scan.outputs.result }}
+          SARIF_FILE: ${{ steps.scan.outputs.sarif-file }}
+          TOTAL: ${{ steps.scan.outputs.total-count }}
+          PACKAGES: ${{ steps.scan.outputs.packages-scanned }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
+          [ "$PACKAGES" = 1 ] || fail "packages-scanned is '$PACKAGES', expected 1"
+          [ "$TOTAL" -gt 0 ] || fail "total-count is '$TOTAL', expected findings"
+          [ -f "$SARIF_FILE" ] || fail "sarif-file '$SARIF_FILE' does not exist"
+          bal version | grep -q '^Ballerina 2201\.13\.5 ' || fail "Ballerina 2201.13.5 is not the installed version"
+          bal tool list | grep -Eq '^\|scan +\|0\.12\.0 ' || fail "bal scan 0.12.0 is not the active tool version"
+
+  incompatible-versions:
+    name: Scan tool version incompatible with Ballerina
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # bal scan 0.12.0 needs Ballerina 2201.13 or later.
+      - name: Scan
+        id: scan
+        continue-on-error: true
+        uses: ./
+        with:
+          ballerina-version: 2201.12.0
+          tool-version: 0.12.0
+          paths: test/projects/single
+          category: incompatible-versions
+          artifacts: true
+
+      - name: Check that the step failed
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.scan.outcome }}
+          RESULT: ${{ steps.scan.outputs.result }}
+          SARIF_FILE: ${{ steps.scan.outputs.sarif-file }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$OUTCOME" = failure ] || fail "The step should fail, but its outcome is '$OUTCOME'"
+          [ "$RESULT" = error ] || fail "result is '$RESULT', expected error"
+          [ -z "$SARIF_FILE" ] || fail "sarif-file must be empty, got '$SARIF_FILE'"
+          bal version | grep -q '^Ballerina 2201\.12\.0 ' || fail "Ballerina 2201.12.0 is not the installed version"
+
+      # Ballerina 2201.12.0 is now on the path, but a pinned version must still be installed.
+      - name: Scan with a newer pinned version
+        id: pinned
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          tool-version: 0.12.0
+          paths: test/projects/single
+          category: pinned-version
+
+      - name: Check that the pinned version was installed
+        shell: bash
+        env:
+          RESULT: ${{ steps.pinned.outputs.result }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
+          bal version | grep -q '^Ballerina 2201\.13\.5 ' || fail "Ballerina 2201.13.5 is not the installed version"
+
+  operating-systems:
+    name: Scan on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Scan
+        id: scan
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/multi, test/restore/sonarqube-failure
+          # The same category in every job of the matrix, so the artifact names must still differ.
+          category: os
+          artifacts: true
+
+      - name: Check the result
+        shell: bash
+        env:
+          RESULT: ${{ steps.scan.outputs.result }}
+          SARIF_FILE: ${{ steps.scan.outputs.sarif-file }}
+          PACKAGES: ${{ steps.scan.outputs.packages-scanned }}
+          UPLOADS: ${{ steps.scan.outputs.uploads }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
+          jq -e '.artifact.name | test("^os-operating-systems-[0-9a-f]{8}$")' <<< "$UPLOADS" > /dev/null \
+            || fail "The artifact must be named after the category, the job and the matrix: $UPLOADS"
+          [ "$PACKAGES" = 3 ] || fail "packages-scanned is '$PACKAGES', expected 3"
+          [ -f "$SARIF_FILE" ] || fail "sarif-file '$SARIF_FILE' does not exist"
+          jq -e '[.runs[0].results[].locations[0].physicalLocation.artifactLocation.uri]
+              | all(startswith("test/") and (contains("\\") | not))' "$SARIF_FILE" > /dev/null \
+            || fail "Every URI must be relative to the repository root, with forward slashes"
+          # The SARIF scan hid the [[platform]] entries of test/restore/sonarqube-failure.
+          [ -z "$(git status --porcelain -- test)" ] || fail "The scan left changes in test: $(git status --porcelain -- test)"

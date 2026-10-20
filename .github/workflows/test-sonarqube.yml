@@ -1,0 +1,543 @@
+name: SonarQube
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  # The SonarQube tests report to a dummy server, so each scan that gets past the settings fails
+  # when SonarScanner cannot reach it. They check what the action resolved and downloaded, and that
+  # the platform plugin ran SonarScanner against the server.
+  # The annotation-checks job checks the error each step of this job reported, and finds it by its
+  # name. Each step's ID is also its category, which titles its errors.
+  sonarqube-invalid-settings:
+    name: SonarQube settings that fail
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Absolute plugin path in Scan.toml
+        id: absolute-plugin
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/sonarqube/absolute-plugin
+          category: absolute-plugin
+          artifacts: true
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: absolute-plugin
+
+      - name: http plugin URL in Scan.toml
+        id: http-plugin
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/sonarqube/http-plugin
+          category: http-plugin
+          artifacts: true
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: http-plugin
+
+      # Pull requests from forks and Dependabot runs get no secrets, so there the action skips SonarQube instead.
+      - name: No token
+        id: no-token
+        if: github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/multi/orders
+          category: no-token
+          artifacts: true
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              project-key: orders
+
+      # A secret that is not set resolves to an empty value.
+      - name: Empty token
+        id: empty-token
+        if: github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/multi/orders
+          category: empty-token
+          artifacts: true
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: ${{ secrets.UNSET_SONAR_TOKEN }}
+              project-key: orders
+
+      - name: Two packages with the same project key
+        id: duplicate-keys
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/multi
+          category: duplicate-keys
+          artifacts: true
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              packages:
+                - path: test/projects/multi/orders
+                  project-key: shared-key
+                - path: test/projects/multi/payments
+                  project-key: shared-key
+
+      # "." and "./" are the same package, so the second item would be ignored.
+      - name: The same package path written two ways
+        id: duplicate-paths
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/multi/orders
+          category: duplicate-paths
+          artifacts: true
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              packages:
+                - path: .
+                  project-key: first-key
+                - path: ./
+                  project-key: second-key
+
+      - name: Platform-level project key for two packages
+        id: shared-project-key
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/multi
+          category: shared-project-key
+          artifacts: true
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: shared-key
+
+      # orders has a key of its own, which does not make the platform-level key apply to payments.
+      - name: Platform-level project key with one package keyed under packages
+        id: leftover-project-key
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/multi
+          category: leftover-project-key
+          artifacts: true
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: shared-key
+              packages:
+                - path: test/projects/multi/orders
+                  project-key: orders
+
+      - name: Platform-level project name for two keyed packages
+        id: shared-project-name
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/multi
+          category: shared-project-name
+          artifacts: true
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-name: Shared Name
+              packages:
+                - path: test/projects/multi/orders
+                  project-key: orders
+                - path: test/projects/multi/payments
+                  project-key: payments
+
+      - name: Project key at the platform level and in the package's item
+        id: project-key-twice
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/multi/orders
+          category: project-key-twice
+          artifacts: true
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: orders
+              packages:
+                - path: test/projects/multi/orders
+                  project-key: orders-item
+
+      - name: http server URL
+        id: http-host
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/multi/orders
+          category: http-host
+          artifacts: true
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: http://sonarqube.example.invalid
+              token: dummy-token
+              project-key: orders
+
+      - name: Package settings that match no package
+        id: unmatched-package
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/multi/orders
+          category: unmatched-package
+          artifacts: true
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: orders
+              packages:
+                - path: test/projects/missing
+                  project-key: missing
+
+      - name: Plugin version below the minimum
+        id: old-plugin-version
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/multi/orders
+          category: old-plugin-version
+          artifacts: true
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              plugin-version: 0.2.0
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: orders
+
+      - name: Check that each step failed
+        shell: bash
+        env:
+          STEPS: ${{ toJSON(steps) }}
+        run: |
+          set -euo pipefail
+          FAILURES=0
+          fail() { echo "::error::$1"; FAILURES=$((FAILURES + 1)); }
+          while IFS=$'\t' read -r id outcome result; do
+            if [ "$outcome" = skipped ]; then
+              echo "$id: skipped"
+              continue
+            fi
+            [ "$outcome" = failure ] || fail "$id: the step should fail, but its outcome is '$outcome'"
+            [ "$result" = error ] || fail "$id: result is '$result', expected error"
+          done < <(jq -r 'to_entries[] | [.key, .value.outcome, .value.outputs.result // ""] | @tsv' <<< "$STEPS")
+          [ ! -d "$RUNNER_TEMP/scan-ballerina-tools" ] || fail "Invalid SonarQube settings must fail before anything is downloaded"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  sonarqube-remote-plugin:
+    name: SonarQube plugin from an https URL in Scan.toml
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+
+      # Serves the platform plugin at the URL in test/sonarqube/remote-plugin/Scan.toml, with a
+      # self-signed certificate that the runner trusts.
+      - name: Serve the plugin over https
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/plugin-server"
+          mkdir -p "$DIR/www"
+          cd "$DIR"
+          curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" -o www/sonar-platform-plugin.jar \
+            https://maven.pkg.github.com/ballerina-platform/sonar-ballerina/io/ballerina/sonar/sonar-platform-plugin/0.3.0/sonar-platform-plugin-0.3.0.jar
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost \
+            -addext subjectAltName=DNS:localhost -keyout key.pem -out cert.pem
+          sudo cp cert.pem /usr/local/share/ca-certificates/plugin-server.crt
+          sudo update-ca-certificates
+          cat > server.py << 'PY'
+          import functools, http.server, ssl
+          handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory="www")
+          server = http.server.HTTPServer(("localhost", 8443), handler)
+          context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+          context.load_cert_chain("cert.pem", "key.pem")
+          server.socket = context.wrap_socket(server.socket, server_side=True)
+          server.serve_forever()
+          PY
+          nohup python3 server.py > server.log 2>&1 &
+          for _ in $(seq 1 10); do
+            curl -fsS -o /dev/null https://localhost:8443/sonar-platform-plugin.jar && exit 0
+            sleep 1
+          done
+          cat server.log
+          echo "::error::The plugin server did not start"
+          exit 1
+
+      - name: Scan
+        id: scan
+        continue-on-error: true
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/sonarqube/remote-plugin
+          category: remote-plugin
+          artifacts: true
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: remote-plugin
+
+      - name: Check that the plugin came from the URL
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.scan.outcome }}
+          RESULT: ${{ steps.scan.outputs.result }}
+          SARIF_FILE: ${{ steps.scan.outputs.sarif-file }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-remote-plugin-*)"
+          SERVED="$RUNNER_TEMP/plugin-server/www/sonar-platform-plugin.jar"
+          jq . "$WORK/sonarqube.json"
+          jq -e '.[0].plugin == {kind: "url", value: "https://localhost:8443/sonar-platform-plugin.jar"}' \
+            "$WORK/sonarqube.json" > /dev/null || fail "The plugin must resolve to the URL in Scan.toml"
+          PLUGIN_FILE="$(jq -r '.[0]."plugin-file"' "$WORK/sonarqube.json")"
+          [ -f "$PLUGIN_FILE" ] || fail "The plugin was not downloaded to '$PLUGIN_FILE'"
+          [ "$(sha256sum < "$PLUGIN_FILE")" = "$(sha256sum < "$SERVED")" ] || fail "The downloaded plugin differs from the served one"
+          # One request is the start-up check of the server above.
+          [ "$(grep -c 'GET /sonar-platform-plugin.jar ' "$RUNNER_TEMP/plugin-server/server.log")" -ge 2 ] \
+            || fail "The action did not request the plugin from the URL"
+          [ ! -e "$RUNNER_TEMP/scan-ballerina-tools/sonar-platform-plugin-0.3.0.jar" ] \
+            || fail "The pinned plugin version must not be downloaded when Scan.toml gives a URL"
+          grep -q 'SonarScanner CLI' "$WORK/logs/sonarqube-0.log" || fail "The plugin did not run SonarScanner"
+          grep -qF 'https://sonarqube.example.invalid/' "$WORK/logs/sonarqube-0.log" \
+            || fail "SonarScanner did not report to the configured server"
+          [ "$OUTCOME" = failure ] || fail "The step should fail, since the server does not exist, but its outcome is '$OUTCOME'"
+          [ "$RESULT" = error ] || fail "result is '$RESULT', expected error"
+          [ -f "$SARIF_FILE" ] || fail "A failed SonarQube scan must not stop the SARIF file, got sarif-file '$SARIF_FILE'"
+          [ -z "$(git status --porcelain -- test)" ] || fail "Scan.toml must be restored after the scan: $(git status --porcelain -- test)"
+
+  sonarqube-plugin-version:
+    name: SonarQube plugin version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Scan
+        id: scan
+        continue-on-error: true
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/multi/orders
+          category: plugin-version
+          artifacts: true
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              plugin-version: 0.3.0
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: orders
+
+      - name: Check that the requested version was used
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.scan.outcome }}
+          RESULT: ${{ steps.scan.outputs.result }}
+          SARIF_FILE: ${{ steps.scan.outputs.sarif-file }}
+          TOTAL: ${{ steps.scan.outputs.total-count }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-plugin-version-*)"
+          CACHE="$RUNNER_TEMP/scan-ballerina-tools"
+          jq . "$WORK/sonarqube.json"
+          jq -e '.[0].plugin == {kind: "version", value: "0.3.0"}' "$WORK/sonarqube.json" > /dev/null \
+            || fail "The plugin must resolve to version 0.3.0"
+          PLUGIN_FILE="$(jq -r '.[0]."plugin-file"' "$WORK/sonarqube.json")"
+          [ "$PLUGIN_FILE" = "$CACHE/sonar-platform-plugin-0.3.0.jar" ] || fail "plugin-file is '$PLUGIN_FILE'"
+          [ -f "$PLUGIN_FILE" ] || fail "The plugin was not downloaded"
+          curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" -o "$RUNNER_TEMP/expected.jar" \
+            https://maven.pkg.github.com/ballerina-platform/sonar-ballerina/io/ballerina/sonar/sonar-platform-plugin/0.3.0/sonar-platform-plugin-0.3.0.jar
+          [ "$(sha256sum < "$PLUGIN_FILE")" = "$(sha256sum < "$RUNNER_TEMP/expected.jar")" ] \
+            || fail "The downloaded plugin is not version 0.3.0"
+          source scripts/lib.sh
+          [ "$(sha256_of "$PLUGIN_FILE")" = "$(sonar_plugin_sha256 0.3.0)" ] \
+            || fail "The checksum pinned for version 0.3.0 does not match the published plugin"
+          grep -q 'SonarScanner CLI' "$WORK/logs/sonarqube-0.log" || fail "The plugin did not run SonarScanner"
+          [ "$OUTCOME" = failure ] || fail "The step should fail, since the server does not exist, but its outcome is '$OUTCOME'"
+          [ "$RESULT" = error ] || fail "result is '$RESULT', expected error"
+          # SonarQube is one destination, so its failure still leaves the SARIF file and the counts.
+          [ -f "$SARIF_FILE" ] || fail "A failed SonarQube scan must not stop the SARIF file, got sarif-file '$SARIF_FILE'"
+          [ "$TOTAL" = 1 ] || fail "total-count is '$TOTAL', expected 1"
+          # The package has no Scan.toml, so the one the action wrote for the scan must be deleted.
+          [ -z "$(git status --porcelain -- test)" ] || fail "The scan left changes in test: $(git status --porcelain -- test)"
+
+  sonarqube-properties-file:
+    name: SonarQube settings from sonar-project.properties
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+
+      # Only host-url and token are given, so the key and name come from the properties file,
+      # and the plugin is the pinned version.
+      - name: Scan with only host-url
+        id: properties
+        continue-on-error: true
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/sonarqube/properties
+          category: properties
+          artifacts: true
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+
+      - name: Scan with project-key also given
+        id: override
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/sonarqube/properties
+          category: override
+          artifacts: true
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: override-key
+
+      - name: Check the resolved settings
+        shell: bash
+        env:
+          PROPERTIES_OUTCOME: ${{ steps.properties.outcome }}
+          PROPERTIES_RESULT: ${{ steps.properties.outputs.result }}
+          OVERRIDE_OUTCOME: ${{ steps.override.outcome }}
+          OVERRIDE_RESULT: ${{ steps.override.outputs.result }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          PROPERTIES_WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-properties-*)"
+          OVERRIDE_WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-override-*)"
+          jq . "$PROPERTIES_WORK/sonarqube.json" "$OVERRIDE_WORK/sonarqube.json"
+
+          jq -e '.[0] | ."project-key" == "properties-key" and ."project-name" == "Properties Name"' \
+            "$PROPERTIES_WORK/sonarqube.json" > /dev/null || fail "properties: the key and name must come from the properties file"
+          jq -e '.[0]."host-url" == "https://sonarqube.example.invalid"' "$PROPERTIES_WORK/sonarqube.json" > /dev/null \
+            || fail "properties: host-url must override sonar.host.url"
+          jq -e '.[0]."properties-file" | endswith("/test/sonarqube/properties/sonar-project.properties")' \
+            "$PROPERTIES_WORK/sonarqube.json" > /dev/null || fail "properties: the package's sonar-project.properties was not used"
+          jq -e '.[0].plugin == {kind: "version", value: "0.3.0"}' "$PROPERTIES_WORK/sonarqube.json" > /dev/null \
+            || fail "properties: the plugin must default to the pinned version 0.3.0"
+          [ -f "$RUNNER_TEMP/scan-ballerina-tools/sonar-platform-plugin-0.3.0.jar" ] || fail "properties: the pinned plugin was not downloaded"
+          grep -qF 'https://sonarqube.example.invalid/' "$PROPERTIES_WORK/logs/sonarqube-0.log" \
+            || fail "properties: SonarScanner did not report to host-url"
+          if grep -qF 'properties.example.invalid' "$PROPERTIES_WORK/logs/sonarqube-0.log"; then
+            fail "properties: SonarScanner used sonar.host.url instead of host-url"
+          fi
+          [ "$PROPERTIES_OUTCOME" = failure ] && [ "$PROPERTIES_RESULT" = error ] \
+            || fail "properties: expected the step to fail with result error, got '$PROPERTIES_OUTCOME' and '$PROPERTIES_RESULT'"
+
+          jq -e '.[0] | ."project-key" == "override-key" and ."project-name" == "Properties Name"' \
+            "$OVERRIDE_WORK/sonarqube.json" > /dev/null || fail "override: project-key must override sonar.projectKey only"
+          [ "$OVERRIDE_OUTCOME" = failure ] && [ "$OVERRIDE_RESULT" = error ] \
+            || fail "override: expected the step to fail with result error, got '$OVERRIDE_OUTCOME' and '$OVERRIDE_RESULT'"
+          [ -z "$(git status --porcelain -- test)" ] || fail "The scan must not change the package: $(git status --porcelain -- test)"
+
+  sonarqube-platform-project-key:
+    name: SonarQube project key at the platform level for one package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+
+      # test/projects/multi holds two packages, and exclude-paths leaves one, so the platform-level
+      # key applies to it. Its item sets only project-name, which does not conflict with the key.
+      - name: Scan
+        id: scan
+        continue-on-error: true
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/multi
+          exclude-paths: test/projects/multi/payments
+          category: platform-project-key
+          artifacts: true
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: orders
+              packages:
+                - path: test/projects/multi/orders
+                  project-name: Orders Service
+
+      - name: Check the resolved settings
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.scan.outcome }}
+          RESULT: ${{ steps.scan.outputs.result }}
+          PACKAGES: ${{ steps.scan.outputs.packages-scanned }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-platform-project-key-*)"
+          jq . "$WORK/sonarqube.json"
+          # The SonarQube scan fails, but the SARIF scan of the one package that exclude-paths left
+          # passes.
+          [ "$PACKAGES" = 1 ] || fail "packages-scanned is '$PACKAGES', expected 1"
+          jq -e 'length == 1 and (.[0] | .package == "test/projects/multi/orders"
+              and ."project-key" == "orders" and ."project-name" == "Orders Service")' \
+            "$WORK/sonarqube.json" > /dev/null || fail "orders must take the platform-level key and the name from its item"
+          # The settings passed, so the scan reached SonarScanner, which fails on the dummy server.
+          grep -q 'SonarScanner CLI' "$WORK/logs/sonarqube-0.log" || fail "The plugin did not run SonarScanner"
+          [ "$OUTCOME" = failure ] || fail "The step should fail, since the server does not exist, but its outcome is '$OUTCOME'"
+          [ "$RESULT" = error ] || fail "result is '$RESULT', expected error"

@@ -1,0 +1,280 @@
+name: Scan.toml
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  # The packages in test/restore have Scan.toml files with [[platform]] entries, sub-tables, odd
+  # spacing and no final newline, which the action changes for a scan and must restore byte for
+  # byte when that scan fails.
+  scan-toml-restore:
+    name: Scan.toml restored after a failed scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Record the Scan.toml files
+        shell: bash
+        run: sha256sum test/restore/*/Scan.toml | tee "$RUNNER_TEMP/scan-toml.sha256"
+
+      # The package does not compile, so the SARIF scan fails while its [[platform]] entries are
+      # hidden.
+      - name: Failed SARIF scan
+        id: sarif-failure
+        continue-on-error: true
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/restore/sarif-failure
+          category: sarif-failure
+
+      # The SARIF scan passes, and the SonarQube scan fails on the dummy server while the sonarqube
+      # entry points to the pinned plugin.
+      - name: Failed SonarQube scan
+        id: sonarqube-failure
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/restore/sonarqube-failure
+          category: sonarqube-failure
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              plugin-version: 0.3.0
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: restore
+
+      - name: Check that the files were restored
+        shell: bash
+        env:
+          SARIF_OUTCOME: ${{ steps.sarif-failure.outcome }}
+          SARIF_RESULT: ${{ steps.sarif-failure.outputs.result }}
+          SONARQUBE_OUTCOME: ${{ steps.sonarqube-failure.outcome }}
+          SONARQUBE_RESULT: ${{ steps.sonarqube-failure.outputs.result }}
+          SONARQUBE_SARIF_FILE: ${{ steps.sonarqube-failure.outputs.sarif-file }}
+        run: |
+          set -euo pipefail
+          FAILURES=0
+          fail() { echo "::error::$1"; FAILURES=$((FAILURES + 1)); }
+
+          SARIF_WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-sarif-failure-*)"
+          [ "$SARIF_OUTCOME" = failure ] && [ "$SARIF_RESULT" = error ] \
+            || fail "sarif-failure: expected the step to fail with result error, got '$SARIF_OUTCOME' and '$SARIF_RESULT'"
+          grep -q 'compilation contains errors' "$SARIF_WORK/logs/scan-0.log" \
+            || fail "sarif-failure: the SARIF scan must fail on the compilation error"
+
+          SONARQUBE_WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-sonarqube-failure-*)"
+          [ "$SONARQUBE_OUTCOME" = failure ] && [ "$SONARQUBE_RESULT" = error ] \
+            || fail "sonarqube-failure: expected the step to fail with result error, got '$SONARQUBE_OUTCOME' and '$SONARQUBE_RESULT'"
+          [ -f "$SONARQUBE_WORK/reports/0.sarif" ] || fail "sonarqube-failure: the SARIF scan must pass"
+          [ -f "$SONARQUBE_SARIF_FILE" ] || fail "sonarqube-failure: a failed SonarQube scan must not stop the SARIF file"
+          grep -q 'SonarScanner CLI' "$SONARQUBE_WORK/logs/sonarqube-0.log" \
+            || fail "sonarqube-failure: the SonarQube scan must load the plugin from Scan.toml and run SonarScanner"
+
+          sha256sum -c "$RUNNER_TEMP/scan-toml.sha256" || fail "Scan.toml must be restored byte for byte"
+          [ -z "$(git status --porcelain -- test)" ] || fail "The scans left changes in test: $(git status --porcelain -- test)"
+          [ ! -s .git/scan-ballerina/manifest.tsv ] || fail "The journal must be empty once the files are restored"
+          # .gitignore hides what SonarScanner and the platform plugin write, so look for it directly.
+          for f in .scannerwork ballerina-static-code-analysis-results.json; do
+            [ ! -e "test/restore/sonarqube-failure/$f" ] || fail "sonarqube-failure: $f must be deleted after the SonarQube scan"
+          done
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # test/remote-scan-toml reads its Scan.toml from an https URL, which the action downloads and
+  # changes a local copy of for each scan. The served file excludes the package's only finding,
+  # and its sonarqube [[platform]] entry names a plugin URL.
+  remote-scan-toml:
+    name: Remote Scan.toml
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Serve Scan.toml and the plugin over https
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/scan-toml-server"
+          mkdir -p "$DIR/www"
+          cd "$DIR"
+          curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" -o www/sonar-platform-plugin.jar \
+            https://maven.pkg.github.com/ballerina-platform/sonar-ballerina/io/ballerina/sonar/sonar-platform-plugin/0.3.0/sonar-platform-plugin-0.3.0.jar
+          printf '%s\n' '[rule]' 'exclude = ["ballerina:1"]' '' '[[platform]]' 'name = "sonarqube"' \
+            'path = "https://localhost:8443/sonar-platform-plugin.jar"' > www/Scan.toml
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost \
+            -addext subjectAltName=DNS:localhost -keyout key.pem -out cert.pem
+          sudo cp cert.pem /usr/local/share/ca-certificates/scan-toml-server.crt
+          sudo update-ca-certificates
+          cat > server.py << 'PY'
+          import functools, http.server, ssl
+          handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory="www")
+          server = http.server.HTTPServer(("localhost", 8443), handler)
+          context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+          context.load_cert_chain("cert.pem", "key.pem")
+          server.socket = context.wrap_socket(server.socket, server_side=True)
+          server.serve_forever()
+          PY
+          nohup python3 server.py > server.log 2>&1 &
+          for _ in $(seq 1 10); do
+            curl -fsS -o /dev/null https://localhost:8443/Scan.toml && exit 0
+            sleep 1
+          done
+          cat server.log
+          echo "::error::The server did not start"
+          exit 1
+
+      - name: Record Ballerina.toml
+        shell: bash
+        run: sha256sum test/remote-scan-toml/Ballerina.toml | tee "$RUNNER_TEMP/ballerina-toml.sha256"
+
+      # The [[platform]] entry is hidden from the copy, so bal scan writes the SARIF report.
+      - name: Scan without platforms
+        id: sarif
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/remote-scan-toml
+          category: remote-scan-toml
+
+      # The SonarQube scan fails on the dummy server, after the plugin from the entry ran.
+      - name: Scan with SonarQube
+        id: sonarqube
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/remote-scan-toml
+          category: remote-scan-toml-sonarqube
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: remote-scan-toml
+
+      - name: Check the scans
+        shell: bash
+        env:
+          SARIF_RESULT: ${{ steps.sarif.outputs.result }}
+          SARIF_FILE: ${{ steps.sarif.outputs.sarif-file }}
+          SARIF_TOTAL: ${{ steps.sarif.outputs.total-count }}
+          SONARQUBE_OUTCOME: ${{ steps.sonarqube.outcome }}
+          SONARQUBE_RESULT: ${{ steps.sonarqube.outputs.result }}
+        run: |
+          set -euo pipefail
+          FAILURES=0
+          fail() { echo "::error::$1"; FAILURES=$((FAILURES + 1)); }
+
+          [ "$SARIF_RESULT" = passed ] || fail "sarif: result is '$SARIF_RESULT', expected passed"
+          [ -f "$SARIF_FILE" ] || fail "sarif: no SARIF file, so the [[platform]] entry was not hidden"
+          [ "$SARIF_TOTAL" = 0 ] || fail "sarif: total-count is '$SARIF_TOTAL', expected 0, since the remote Scan.toml excludes ballerina:1"
+
+          SONARQUBE_WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-remote-scan-toml-sonarqube-*)"
+          jq . "$SONARQUBE_WORK/sonarqube.json"
+          jq -e '.[0] | ."scan-toml-kind" == "remote"
+              and .plugin == {kind: "url", value: "https://localhost:8443/sonar-platform-plugin.jar"}' \
+            "$SONARQUBE_WORK/sonarqube.json" > /dev/null || fail "sonarqube: the plugin must resolve to the URL in the remote Scan.toml"
+          grep -q 'SonarScanner CLI' "$SONARQUBE_WORK/logs/sonarqube-0.log" \
+            || fail "sonarqube: the plugin did not run SonarScanner"
+          [ "$SONARQUBE_OUTCOME" = failure ] && [ "$SONARQUBE_RESULT" = error ] \
+            || fail "sonarqube: expected the step to fail with result error, got '$SONARQUBE_OUTCOME' and '$SONARQUBE_RESULT'"
+
+          sha256sum -c "$RUNNER_TEMP/ballerina-toml.sha256" || fail "Ballerina.toml must be restored byte for byte"
+          [ -z "$(git status --porcelain -- test)" ] || fail "The scans left changes in test: $(git status --porcelain -- test)"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # The packages in test/scan-config point [scan] configPath in Ballerina.toml to a Scan.toml the
+  # action cannot use: an http URL, an https URL that cannot be reached, a missing file, and no
+  # configPath at all. The annotation-checks job checks the error each one reported.
+  scan-config:
+    name: Scan.toml settings that fail
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Scan
+        id: scan-config
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/scan-config
+          category: scan-config
+
+      - name: Check that each step failed before anything was downloaded
+        shell: bash
+        env:
+          STEPS: ${{ toJSON(steps) }}
+        run: |
+          set -euo pipefail
+          FAILURES=0
+          fail() { echo "::error::$1"; FAILURES=$((FAILURES + 1)); }
+          while IFS=$'\t' read -r id outcome result; do
+            [ "$outcome" = failure ] || fail "$id: the step should fail, but its outcome is '$outcome'"
+            [ "$result" = error ] || fail "$id: result is '$result', expected error"
+          done < <(jq -r 'to_entries[] | [.key, .value.outcome, .value.outputs.result // ""] | @tsv' <<< "$STEPS")
+          [ ! -d "$RUNNER_TEMP/scan-ballerina-tools" ] || fail "A Scan.toml the action cannot use must fail before anything is downloaded"
+          if command -v bal > /dev/null 2>&1; then
+            fail "A Scan.toml the action cannot use must fail before Ballerina is installed"
+          fi
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # A run that is stopped before it restores its files leaves them in the journal, and the next
+  # run restores them before it reads any Ballerina.toml or Scan.toml.
+  interrupted-restore:
+    name: Files restored after an interrupted run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Leave a changed Scan.toml and Ballerina.toml behind
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum test/restore/sarif-failure/Scan.toml test/remote-scan-toml/Ballerina.toml | tee "$RUNNER_TEMP/files.sha256"
+          SCAN_WORK_DIR="$RUNNER_TEMP/stopped" bash -c '
+            source scripts/lib.sh
+            mkdir -p "$SCAN_WORK_DIR"
+            journal_init
+            for f in test/restore/sarif-failure/Scan.toml test/remote-scan-toml/Ballerina.toml; do
+              printf "changed by a stopped run\n" > "$SCAN_WORK_DIR/new"
+              protect "$f" "$(sha256_of "$SCAN_WORK_DIR/new")"
+              cp "$SCAN_WORK_DIR/new" "$f"
+            done
+            protect test/projects/single/.scannerwork
+            mkdir -p test/projects/single/.scannerwork
+            # Killed: no trap runs.
+            kill -9 $$' || true
+          if sha256sum --quiet -c "$RUNNER_TEMP/files.sha256" 2> /dev/null; then
+            echo "::error::The stopped run must leave the files changed"
+            exit 1
+          fi
+
+      - name: Scan
+        id: scan
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/single
+          category: interrupted-restore
+
+      - name: Check that the files were restored
+        shell: bash
+        env:
+          RESULT: ${{ steps.scan.outputs.result }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
+          sha256sum -c "$RUNNER_TEMP/files.sha256" || fail "The files must be restored byte for byte"
+          [ ! -e test/projects/single/.scannerwork ] || fail ".scannerwork must be deleted"
+          [ ! -s .git/scan-ballerina/manifest.tsv ] || fail "The journal must be empty once it is replayed"

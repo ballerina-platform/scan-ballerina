@@ -1,0 +1,150 @@
+name: Gate
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  fail-on-severity:
+    name: Fail on medium severity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Scan a package with low findings only
+        id: low
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/single
+          category: low-only
+          artifacts: true
+          fail-on-severity: medium
+
+      - name: Scan a package with a medium finding
+        id: medium
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/secrets
+          category: medium
+          artifacts: true
+          fail-on-severity: medium
+
+      - name: Check the gate
+        shell: bash
+        env:
+          LOW_OUTCOME: ${{ steps.low.outcome }}
+          LOW_RESULT: ${{ steps.low.outputs.result }}
+          LOW_LOW: ${{ steps.low.outputs.low-count }}
+          LOW_MEDIUM: ${{ steps.low.outputs.medium-count }}
+          LOW_HIGH: ${{ steps.low.outputs.high-count }}
+          MEDIUM_OUTCOME: ${{ steps.medium.outcome }}
+          MEDIUM_RESULT: ${{ steps.medium.outputs.result }}
+          MEDIUM_MEDIUM: ${{ steps.medium.outputs.medium-count }}
+          MEDIUM_SARIF: ${{ steps.medium.outputs.sarif-file }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$LOW_LOW" -gt 0 ] && [ "$LOW_MEDIUM" = 0 ] && [ "$LOW_HIGH" = 0 ] \
+            || fail "low-only: expected only low findings, got $LOW_HIGH high, $LOW_MEDIUM medium, $LOW_LOW low"
+          [ "$LOW_OUTCOME" = success ] || fail "low-only: low findings must not fail a medium gate"
+          [ "$LOW_RESULT" = passed ] || fail "low-only: result is '$LOW_RESULT', expected passed"
+          [ "$MEDIUM_MEDIUM" = 1 ] || fail "medium: medium-count is '$MEDIUM_MEDIUM', expected 1"
+          [ "$MEDIUM_OUTCOME" = failure ] || fail "medium: a medium finding must fail a medium gate"
+          [ "$MEDIUM_RESULT" = failed ] || fail "medium: result is '$MEDIUM_RESULT', expected failed"
+          [ -f "$MEDIUM_SARIF" ] || fail "medium: the SARIF file must be written even when the gate fails"
+
+  max-findings:
+    name: Max findings without a severity gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The gate is off, so max-findings has no effect even though there are more findings.
+      - name: Scan
+        id: scan
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/single
+          category: max-findings
+          max-findings: 1
+          artifacts: true
+
+      - name: Check that the step passed
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.scan.outcome }}
+          RESULT: ${{ steps.scan.outputs.result }}
+          TOTAL: ${{ steps.scan.outputs.total-count }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$TOTAL" -gt 1 ] || fail "total-count is '$TOTAL', expected more than max-findings"
+          [ "$OUTCOME" = success ] || fail "The step should pass, but its outcome is '$OUTCOME'"
+          [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
+
+  severity-and-max-findings:
+    name: Fail on severity with max findings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Count the findings
+        id: baseline
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/single
+          category: baseline
+          artifacts: true
+
+      - name: Work out the limits
+        id: limits
+        shell: bash
+        env:
+          TOTAL: ${{ steps.baseline.outputs.total-count }}
+        run: |
+          set -euo pipefail
+          [ "$TOTAL" -gt 0 ] || { echo "::error::total-count is '$TOTAL', expected findings"; exit 1; }
+          echo "at=$TOTAL" >> "$GITHUB_OUTPUT"
+          echo "below=$((TOTAL - 1))" >> "$GITHUB_OUTPUT"
+
+      - name: Scan with max-findings equal to the findings
+        id: at-limit
+        uses: ./
+        with:
+          paths: test/projects/single
+          category: at-limit
+          artifacts: true
+          fail-on-severity: low
+          max-findings: ${{ steps.limits.outputs.at }}
+
+      - name: Scan with max-findings one below the findings
+        id: over-limit
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/single
+          category: over-limit
+          artifacts: true
+          fail-on-severity: low
+          max-findings: ${{ steps.limits.outputs.below }}
+
+      - name: Check the gate
+        shell: bash
+        env:
+          AT_OUTCOME: ${{ steps.at-limit.outcome }}
+          AT_RESULT: ${{ steps.at-limit.outputs.result }}
+          OVER_OUTCOME: ${{ steps.over-limit.outcome }}
+          OVER_RESULT: ${{ steps.over-limit.outputs.result }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$AT_OUTCOME" = success ] || fail "at-limit: findings up to max-findings must pass"
+          [ "$AT_RESULT" = passed ] || fail "at-limit: result is '$AT_RESULT', expected passed"
+          [ "$OVER_OUTCOME" = failure ] || fail "over-limit: more findings than max-findings must fail"
+          [ "$OVER_RESULT" = failed ] || fail "over-limit: result is '$OVER_RESULT', expected failed"

@@ -1,0 +1,212 @@
+name: Reporting
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  categories:
+    name: Two categories in one job
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Scan orders
+        id: orders
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/multi/orders
+          category: orders
+          artifacts: true
+
+      - name: Scan payments
+        id: payments
+        uses: ./
+        with:
+          paths: test/projects/multi/payments
+          category: payments
+          artifacts: true
+
+      - name: Check that each category has its own results
+        shell: bash
+        env:
+          ORDERS_RESULT: ${{ steps.orders.outputs.result }}
+          ORDERS_SARIF: ${{ steps.orders.outputs.sarif-file }}
+          ORDERS_TOTAL: ${{ steps.orders.outputs.total-count }}
+          PAYMENTS_RESULT: ${{ steps.payments.outputs.result }}
+          PAYMENTS_SARIF: ${{ steps.payments.outputs.sarif-file }}
+          PAYMENTS_TOTAL: ${{ steps.payments.outputs.total-count }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$ORDERS_RESULT" = passed ] || fail "orders: result is '$ORDERS_RESULT', expected passed"
+          [ "$PAYMENTS_RESULT" = passed ] || fail "payments: result is '$PAYMENTS_RESULT', expected passed"
+          [ "$(basename "$ORDERS_SARIF")" = orders.sarif ] || fail "orders: sarif-file is '$ORDERS_SARIF'"
+          [ "$(basename "$PAYMENTS_SARIF")" = payments.sarif ] || fail "payments: sarif-file is '$PAYMENTS_SARIF'"
+          [ "$(dirname "$ORDERS_SARIF")" != "$(dirname "$PAYMENTS_SARIF")" ] || fail "Each category must have its own work directory"
+          [ -f "$ORDERS_SARIF" ] || fail "The orders SARIF file must still exist after the payments scan"
+          [ "$ORDERS_TOTAL" = 1 ] || fail "orders: total-count is '$ORDERS_TOTAL', expected 1"
+          [ "$PAYMENTS_TOTAL" = 2 ] || fail "payments: total-count is '$PAYMENTS_TOTAL', expected 2"
+          jq -e '[.runs[0].results[].locations[0].physicalLocation.artifactLocation.uri] | all(startswith("test/projects/multi/orders/"))' \
+            "$ORDERS_SARIF" > /dev/null || fail "orders: the SARIF file has findings from other packages"
+          jq -e '[.runs[0].results[].locations[0].physicalLocation.artifactLocation.uri] | all(startswith("test/projects/multi/payments/"))' \
+            "$PAYMENTS_SARIF" > /dev/null || fail "payments: the SARIF file has findings from other packages"
+
+  # The annotation-checks job checks the annotations of this job, which finds it by its name.
+  annotations:
+    name: Annotations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Scan with annotations
+        id: annotated
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/multi/orders
+          category: annotated
+          artifacts: true
+          annotations: true
+
+      # A control, so that the check also shows annotations=false adds none.
+      - name: Scan without annotations
+        id: plain
+        uses: ./
+        with:
+          paths: test/projects/multi/payments
+          category: plain
+          artifacts: true
+          annotations: false
+
+  job-summary:
+    name: Job summary turned off
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # A control, so that the check below also shows that the summary files can be read.
+      - name: Scan with a job summary
+        id: with-summary
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/multi/orders
+          category: with-summary
+          artifacts: true
+
+      - name: Scan without a job summary
+        id: without-summary
+        uses: ./
+        with:
+          paths: test/projects/multi/orders
+          category: without-summary
+          artifacts: true
+          job-summary: false
+
+      # Each step writes its summary to a file in the runner's file command directory.
+      - name: Check the job summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          DIR="$RUNNER_TEMP/_runner_file_commands"
+          grep -rqF '### ✅ bal scan: with-summary' "$DIR" \
+            || fail "job-summary=true must write the summary (no summary found in $DIR)"
+          if grep -rqF 'bal scan: without-summary' "$DIR"; then
+            fail "job-summary=false must not write the summary"
+          fi
+
+  artifacts:
+    name: SARIF file saved as an artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Scan and save the SARIF file
+        id: saved
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/multi
+          category: artifacts-true
+          artifacts: true
+
+      - name: Scan with artifacts false
+        id: unsaved
+        uses: ./
+        with:
+          paths: test/projects/multi/orders
+          category: artifacts-false
+          artifacts: false
+
+      - name: Scan with artifacts left out
+        id: default
+        uses: ./
+        with:
+          paths: test/projects/multi/orders
+          category: artifacts-default
+
+      # The report names that artifacts took before are no longer accepted.
+      - name: Scan with a value that is not true or false
+        id: invalid
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/multi/orders
+          category: artifacts-invalid
+          artifacts: sarif
+
+      - name: Download the artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-*
+          path: ${{ runner.temp }}/downloaded
+          merge-multiple: true
+
+      - name: Check the artifacts
+        shell: bash
+        env:
+          SAVED_SARIF: ${{ steps.saved.outputs.sarif-file }}
+          SAVED_UPLOADS: ${{ steps.saved.outputs.uploads }}
+          UNSAVED_RESULT: ${{ steps.unsaved.outputs.result }}
+          UNSAVED_SARIF: ${{ steps.unsaved.outputs.sarif-file }}
+          UNSAVED_UPLOADS: ${{ steps.unsaved.outputs.uploads }}
+          DEFAULT_RESULT: ${{ steps.default.outputs.result }}
+          DEFAULT_UPLOADS: ${{ steps.default.outputs.uploads }}
+          INVALID_OUTCOME: ${{ steps.invalid.outcome }}
+          INVALID_RESULT: ${{ steps.invalid.outputs.result }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          DIR="$RUNNER_TEMP/downloaded"
+          (cd "$DIR" && find . -type f | sort)
+
+          # Every matching artifact is extracted here, so one file also means no other artifact was saved.
+          [ "$(cd "$DIR" && find . -type f)" = ./artifacts-true.sarif ] \
+            || fail "Only the true scan must save an artifact, holding the merged SARIF file only"
+          cmp -s "$DIR/artifacts-true.sarif" "$SAVED_SARIF" \
+            || fail "true: the artifact must hold the same file as the sarif-file output"
+          jq -e '.runs[0].results | length > 0' "$DIR/artifacts-true.sarif" > /dev/null \
+            || fail "true: the SARIF file in the artifact has no findings"
+          jq -e '.artifact | .name == "artifacts-true-artifacts" and (.id | length > 0) and (.url | startswith("https://"))' \
+            <<< "$SAVED_UPLOADS" > /dev/null || fail "true: uploads has no artifact entry: $SAVED_UPLOADS"
+          SAVED_WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-artifacts-true-*)"
+          [ "$(ls "$SAVED_WORK"/logs | wc -l)" -eq 2 ] \
+            || fail "true: bal scan must run once per package: $(ls "$SAVED_WORK"/logs)"
+
+          [ "$UNSAVED_RESULT" = passed ] || fail "false: result is '$UNSAVED_RESULT', expected passed"
+          [ -f "$UNSAVED_SARIF" ] || fail "false: the SARIF file must still be written, got sarif-file '$UNSAVED_SARIF'"
+          jq -e 'has("artifact") | not' <<< "$UNSAVED_UPLOADS" > /dev/null \
+            || fail "false: uploads must have no artifact entry: $UNSAVED_UPLOADS"
+
+          [ "$DEFAULT_RESULT" = passed ] || fail "default: result is '$DEFAULT_RESULT', expected passed"
+          jq -e 'has("artifact") | not' <<< "$DEFAULT_UPLOADS" > /dev/null \
+            || fail "default: uploads must have no artifact entry: $DEFAULT_UPLOADS"
+
+          [ "$INVALID_OUTCOME" = failure ] || fail "invalid: artifacts: sarif must fail the step, but its outcome is '$INVALID_OUTCOME'"
+          [ "$INVALID_RESULT" = error ] || fail "invalid: result is '$INVALID_RESULT', expected error"
+          [ -z "$(git status --porcelain -- test)" ] || fail "The scans must not change the packages: $(git status --porcelain -- test)"
