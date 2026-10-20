@@ -27,7 +27,7 @@ jobs:
     name: Compatible Ballerina and scan tool versions
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Scan
         id: scan
@@ -59,7 +59,7 @@ jobs:
     name: Scan tool version incompatible with Ballerina
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # bal scan 0.12.0 needs Ballerina 2201.13 or later.
       - name: Scan
@@ -111,7 +111,7 @@ jobs:
     name: One path with several packages
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Scan
         id: scan
@@ -141,7 +141,7 @@ jobs:
     name: Several paths with a package excluded
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Scan
         id: scan
@@ -178,7 +178,7 @@ jobs:
     name: Ballerina workspace
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Scan
         id: scan
@@ -212,7 +212,7 @@ jobs:
     name: Two categories in one job
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Scan orders
         id: orders
@@ -260,7 +260,7 @@ jobs:
     name: Fail on medium severity
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Scan a package with low findings only
         id: low
@@ -310,7 +310,7 @@ jobs:
     name: Max findings without a severity gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The gate is off, so max-findings has no effect even though there are more findings.
       - name: Scan
@@ -340,7 +340,7 @@ jobs:
     name: Fail on severity with max findings
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Count the findings
         id: baseline
@@ -403,7 +403,7 @@ jobs:
     name: Annotations
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Scan with annotations
         id: annotated
@@ -429,7 +429,7 @@ jobs:
     name: Job summary turned off
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # A control, so that the check below also shows that the summary files can be read.
       - name: Scan with a job summary
@@ -467,7 +467,7 @@ jobs:
     name: SARIF file saved as an artifact
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Scan and save the SARIF file
         id: saved
@@ -504,7 +504,7 @@ jobs:
           artifacts: sarif
 
       - name: Download the artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: artifacts-*
           path: ${{ runner.temp }}/downloaded
@@ -564,7 +564,7 @@ jobs:
     name: SonarQube settings that fail
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Absolute plugin path in Scan.toml
         id: absolute-plugin
@@ -815,7 +815,7 @@ jobs:
       contents: read
       packages: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Serves the platform plugin at the URL in test/sonarqube/remote-plugin/Scan.toml, with a
       # self-signed certificate that the runner trusts.
@@ -905,7 +905,7 @@ jobs:
       contents: read
       packages: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Scan
         id: scan
@@ -966,7 +966,7 @@ jobs:
       contents: read
       packages: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Only host-url and token are given, so the key and name come from the properties file,
       # and the plugin is the pinned version.
@@ -1044,7 +1044,7 @@ jobs:
       contents: read
       packages: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # test/projects/multi holds two packages, and exclude-paths leaves one, so the platform-level
       # key applies to it. Its item sets only project-name, which does not conflict with the key.
@@ -1100,7 +1100,7 @@ jobs:
       contents: read
       packages: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Record the Scan.toml files
         shell: bash
@@ -1180,7 +1180,7 @@ jobs:
       contents: read
       packages: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Serve Scan.toml and the plugin over https
         shell: bash
@@ -1283,7 +1283,7 @@ jobs:
     name: Scan.toml settings that fail
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Scan
         id: scan-config
@@ -1318,7 +1318,7 @@ jobs:
     name: Annotation commands
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Write the annotations and compare with the golden file
         shell: bash
@@ -1341,7 +1341,7 @@ jobs:
     name: SARIF merging
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Merge the reports and compare with the golden files
         shell: bash
@@ -1367,7 +1367,7 @@ jobs:
     name: Scan.toml editing
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Compare with the golden files
         shell: bash
@@ -1389,7 +1389,7 @@ jobs:
     name: Files restored after an interrupted run
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Leave a changed Scan.toml and Ballerina.toml behind
         shell: bash
@@ -1442,7 +1442,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Scan
         id: scan
@@ -1487,7 +1487,7 @@ jobs:
       actions: read
       checks: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check the annotations of the Annotations job
         shell: bash
