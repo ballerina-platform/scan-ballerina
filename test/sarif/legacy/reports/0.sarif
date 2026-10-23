@@ -1,0 +1,50 @@
+{
+  "version": "2.1.0",
+  "$schema": "https://www.schemastore.org/schemas/json/sarif-2.1.0.json",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "Ballerina Scan Tool",
+          "organization": "WSO2",
+          "semanticVersion": "0.11.0",
+          "informationUri": "https://central.ballerina.io/ballerina/tool_scan/0.11.0",
+          "rules": [
+            {
+              "id": "ballerina:1",
+              "helpUri": "https://central.ballerina.io/ballerina/tool_scan/0.11.0#ballerina1---avoid-checkpanic",
+              "shortDescription": {"text": "Avoid checkpanic"},
+              "defaultConfiguration": {"level": "note"}
+            },
+            {
+              "id": "ballerina/example:1",
+              "helpUri": "https://central.ballerina.io/ballerina/tool_scan/0.11.0#ballerinaexample1---avoid-weak-hashing",
+              "shortDescription": {"text": "Avoid weak hashing"},
+              "defaultConfiguration": {"level": "warning"}
+            },
+            {
+              "id": "ballerina/example:2",
+              "helpUri": "https://central.ballerina.io/ballerina/tool_scan/0.11.0#ballerinaexample2---division-by-zero",
+              "shortDescription": {"text": "Division by zero"},
+              "defaultConfiguration": {"level": "error"}
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "ballerina:1", "level": "note", "message": {"text": "Avoid checkpanic"},
+          "locations": [{"physicalLocation": {"artifactLocation": {"uri": "main.bal"}, "region": {"startLine": 3, "startColumn": 5, "endLine": 3, "endColumn": 20, "charOffset": 40, "charLength": 15}}}]
+        },
+        {
+          "ruleId": "ballerina/example:1", "level": "warning", "message": {"text": "Avoid weak hashing"},
+          "locations": [{"physicalLocation": {"artifactLocation": {"uri": "main.bal"}, "region": {"startLine": 7, "startColumn": 5, "endLine": 7, "endColumn": 30, "charOffset": 90, "charLength": 25}}}]
+        },
+        {
+          "ruleId": "ballerina/example:2", "level": "error", "message": {"text": "Division by zero"},
+          "locations": [{"physicalLocation": {"artifactLocation": {"uri": "main.bal"}, "region": {"startLine": 9, "startColumn": 13, "endLine": 9, "endColumn": 18, "charOffset": 130, "charLength": 5}}}]
+        }
+      ]
+    }
+  ]
+}

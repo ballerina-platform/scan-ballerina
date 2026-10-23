@@ -146,8 +146,8 @@ The action's last inner step runs even when an earlier one failed, so `result` i
 
 | Input | Default | Description |
 | --- | --- | --- |
-| `ballerina-version` | `latest` | Ballerina version to install, `2201.13.0` or later. `latest` uses the Ballerina already on the path if it is `2201.13.0` or later, and installs the latest Ballerina otherwise; any other version is installed unless it is the one on the path. Pin a version for reproducible runs. |
-| `tool-version` | latest compatible | `bal scan` tool version, `0.12.0` or later. Empty uses the latest version compatible with the Ballerina version. A version that does not support the Ballerina version fails the step. |
+| `ballerina-version` | compatible | Ballerina version to install, `2201.12.0` or later, and `2201.13.0` or later for `bal scan` `0.12.0` and later, or `latest` for the latest release. Empty uses the Ballerina already on the path if it can run the scan tool (`2201.12.0` or later, or the version `tool-version` needs), and installs the latest Ballerina otherwise. A version, or `latest`, is installed unless it is the one on the path. Pin a version for reproducible runs. See [Versions](#versions). |
+| `tool-version` | latest compatible | `bal scan` tool version, `0.11.0` or later, or `latest` for the latest release. Empty uses the latest version compatible with the Ballerina version. A version, or `latest`, that does not support the Ballerina version fails the step. See [Scan tool 0.11](#scan-tool-011) for what `0.11.x` does not support. |
 | `platforms` | empty | Comma separated platforms to send the findings to: `github-code-scanning`, `sonarqube`. Empty produces the SARIF file only. |
 | `paths` | `.` | Newline or comma separated paths to scan. Every package and workspace in these paths, including their subdirectories, is scanned, and their findings are merged into one SARIF file. A path that does not exist fails the step. |
 | `exclude-paths` | empty | Newline or comma separated globs, relative to the repository root, for packages and files to leave out. A directory excludes everything below it. `*` stays within one directory and `**` crosses directories. |
@@ -194,7 +194,7 @@ The fields at the platform level are the defaults for every scanned package. An 
 | Field | Required | Description |
 | --- | --- | --- |
 | `plugin-path` | No | Platform plugin JAR, as a path relative to the repository root or an `https` URL. Overrides `path` in `Scan.toml`. Cannot be used with `plugin-version`. |
-| `plugin-version` | No | Platform plugin version to download, `0.3.0` or later, or `latest`. Overrides `path` in `Scan.toml`. A version this release knows fails when it does not work with the installed scan tool. `latest` warns, since it may not match the scan tool. |
+| `plugin-version` | No | Platform plugin version to download, `0.3.0` or later, or `latest` for the latest release. Overrides `path` in `Scan.toml`. A version this release knows, including the one `latest` resolves to, fails when it does not work with the installed scan tool. |
 | `properties-file` | No | Properties file, relative to the repository root. Overrides `sonarProjectPropertiesPath` in `Scan.toml`. |
 | `host-url` | Yes, unless set under `packages` or in the properties file | SonarQube server URL. Must be `https`. Overrides `sonar.host.url`. |
 | `token` | Yes, unless set under `packages` | Token for submitting analyses. Pass it from a secret. |
@@ -254,6 +254,31 @@ Read a value from `uploads` with `fromJSON(steps.scan.outputs.uploads)['github-c
 
 A result without a `level` takes its rule's default level, and `warning` when the rule has none either.
 
+## Versions
+
+Ballerina and the scan tool are resolved together, and then the SonarQube platform plugin for the scan tool. Each must be at least the oldest supported version: Ballerina `2201.12.0`, `bal scan` `0.11.0` and plugin `0.3.0`.
+
+- **A version, or `latest`,** is used as given. `latest` is the latest release, whatever the other versions are. A pair that does not work together fails before anything is installed: `bal scan` `0.12.0` and later need Ballerina `2201.13.0` or later.
+- **Empty** is resolved to a version that works with the others:
+
+| `ballerina-version` | `tool-version` | Result |
+| --- | --- | --- |
+| version or `latest` | version or `latest` | Both as given, if they work together. |
+| version or `latest` | empty | That Ballerina, and the latest scan tool compatible with it. |
+| empty | version or `latest` | The Ballerina on the path if it can run that scan tool, otherwise the latest Ballerina. |
+| empty | empty | The Ballerina on the path if it can run a supported scan tool, otherwise the latest Ballerina, and the latest scan tool compatible with it. |
+
+An empty `plugin-version`, with no `plugin-path` or `Scan.toml` path, is the newest plugin this release knows to work with the installed scan tool. Plugin `0.3.0` works with `bal scan` `0.11.x` and `0.12.x`.
+
+## Scan tool 0.11
+
+`bal scan` `0.11.x`, the latest scan tool for Ballerina `2201.12.x`, is supported with these differences:
+
+- **Severity:** rules have no severity, so the level follows the rule kind: a bug is `error` (`high`), a vulnerability is `warning` (`medium`) and a code smell is `note` (`low`). The rule kind, which `0.11.x` leaves out of the SARIF file, is taken from that level, so vulnerabilities are still tagged `security` in code scanning.
+- **Messages and help:** each finding's message is its rule's title, and rules have no CWE, OWASP or tag details.
+- **Workspaces:** Ballerina `2201.12.x` has no workspaces, and `0.11.x` cannot scan them, so a workspace in `paths` fails the step before anything is scanned, with an error that names the Ballerina or scan tool version. Use Ballerina `2201.13.0` or later with `bal scan` `0.12.0` or later, or leave the workspace out with `exclude-paths`.
+- **Compilation errors:** `0.11.x` scans a package that does not compile without failing, so its findings can be incomplete. Later versions fail the scan.
+
 ## Failure behaviour
 
 Findings never fail the step unless you set `fail-on-severity`. Problems with the setup or the scan do.
@@ -263,6 +288,7 @@ Findings never fail the step unless you set `fail-on-severity`. Problems with th
 | Invalid input, or a path that does not exist | Fails before packages are searched or anything but `yq` is downloaded |
 | Missing or invalid SonarQube settings, missing or duplicate project keys, a `packages` item that matches no package or repeats a path, or a workspace with `sonarqube` | Fails after packages are found, before anything is downloaded |
 | No package found | Passes with a warning, result `skipped` |
+| A workspace with Ballerina older than `2201.13.0` or `bal scan` older than `0.12.0` | Fails after the tools are installed, before any package is scanned |
 | `bal scan` fails for a package | The other packages are still scanned, then the step fails without a SARIF file |
 | SonarQube is unreachable or rejects the analysis of a package | The other packages are still scanned, the SARIF file is produced and sent to the other platforms, then the step fails with result `error` |
 | A package reads its `Scan.toml` from a non-`https` URL, an `https` URL that cannot be downloaded, or a missing file, or has a `[scan]` table without `configPath`, with any platforms | Fails after packages are found, before the tools are downloaded. See [`Scan.toml`](#scantoml) |
@@ -279,10 +305,10 @@ The action is a composite action. Its logic is in the shell and `jq` scripts in 
 1. `install-yq.sh` installs `yq` when the runner has no `yq` v4, as on Windows runners. `validate.sh` checks the inputs.
 2. `find-packages.sh` finds the packages and workspaces in `paths`, skipping `target`, `build` and `.git`. A workspace is scanned once from its root. It checks each package's `Scan.toml` setting, and downloads a remote `Scan.toml`.
 3. `check-sonarqube.sh` resolves each package's SonarQube settings.
-4. [`setup-ballerina`](https://github.com/ballerina-platform/setup-ballerina) installs Ballerina, unless `bal` is already on the path and `ballerina-version` is its version, or `latest` with a `bal` of `2201.13.0` or later. On Linux, a Ballerina installed from a `.deb` package is removed first, since `dpkg` cannot install another version over it.
-5. `install-scan-tool.sh` installs the scan tool: the `tool-version` given, or else the latest version compatible with the installed Ballerina, which Ballerina Central picks and the action asks for once per Ballerina version in a job. It is pulled only when it is missing, and made active when another version is. With SonarQube, `install-sonarqube.sh` downloads the platform plugin, checked against the installed scan tool, and the SonarScanner CLI, once per job.
-6. `scan.sh` runs `bal scan --format=sarif` on each package, and with SonarQube `bal scan --platforms=sonarqube`.
-7. `merge-sarif.sh` normalizes the paths, drops filtered findings and merges the reports into one run.
+4. `resolve-versions.sh` resolves `latest` and empty versions, as in [Versions](#versions), asking Ballerina Central for the latest releases, and fails on a pair that does not work together. [`setup-ballerina`](https://github.com/ballerina-platform/setup-ballerina) then installs the resolved Ballerina, unless it is the `bal` on the path. On Linux, a Ballerina installed from a `.deb` package is removed first, since `dpkg` cannot install another version over it.
+5. `install-scan-tool.sh` installs the scan tool: the resolved `tool-version`, or else the latest version compatible with the installed Ballerina, which Ballerina Central picks and the action asks for once per Ballerina version in a job. It is pulled only when it is missing, and made active when another version is. With SonarQube, `install-sonarqube.sh` downloads the platform plugin, checked against the installed scan tool, and the SonarScanner CLI, once per job.
+6. `scan.sh` runs `bal scan --format=sarif` on each package, and with SonarQube `bal scan --platforms=sonarqube`. With Ballerina older than `2201.13.0` or a scan tool older than `0.12.0`, it first fails on any workspace.
+7. `merge-sarif.sh` normalizes the paths, drops filtered findings and merges the reports into one run. For reports of `bal scan` `0.11.x`, it takes each rule's kind from its level.
 8. `github/codeql-action/upload-sarif` uploads the SARIF file to code scanning.
 9. With `artifacts: true`, `actions/upload-artifact` saves the SARIF file, also when the upload to code scanning failed.
 10. `report.sh` writes the annotations and the job summary, and applies the gate.

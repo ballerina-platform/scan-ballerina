@@ -1,0 +1,8 @@
+[package]
+org = "scan_test"
+name = "oldest"
+version = "0.1.0"
+distribution = "2201.12.0"
+
+[build-options]
+observabilityIncluded = false

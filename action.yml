@@ -7,11 +7,11 @@ branding:
 
 inputs:
   ballerina-version:
-    description: 'Ballerina version to install, 2201.13.0 or later. latest uses the Ballerina already on the path if it is 2201.13.0 or later, and installs the latest Ballerina otherwise; any other version is installed unless it is the one on the path. Pin a version for reproducible runs.'
+    description: 'Ballerina version to install, 2201.12.0 or later, or latest for the latest release. Empty uses the Ballerina already on the path if it can run the scan tool, and installs the latest Ballerina otherwise. A version is installed unless it is the one on the path. Pin a version for reproducible runs.'
     required: false
-    default: 'latest'
+    default: ''
   tool-version:
-    description: 'bal scan tool version, 0.12.0 or later. Empty uses the latest version compatible with the Ballerina version.'
+    description: 'bal scan tool version, 0.11.0 or later, or latest for the latest release. Workspaces need 0.12.0 or later. Empty uses the latest version compatible with the Ballerina version.'
     required: false
     default: ''
   platforms:
@@ -150,41 +150,24 @@ runs:
         CATEGORY: ${{ inputs.category }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/check-sonarqube.sh"
 
-    # A bal already on the path is used for latest if it can run the scan tool, or when it is the version asked for.
-    # Otherwise a Ballerina installed from a .deb package is removed, so that setup-ballerina can install another.
-    - name: Check for Ballerina
-      id: bal
+    # Resolves latest and empty versions. A Ballerina installed from a .deb package is removed when
+    # another one is installed, so that setup-ballerina can install it.
+    - name: Resolve the Ballerina and scan tool versions
+      id: versions
       if: steps.find.outputs.count != '0'
       shell: bash
       env:
         BALLERINA_VERSION: ${{ inputs.ballerina-version }}
-      run: |
-        source "${GITHUB_ACTION_PATH//\\//}/scripts/lib.sh"
-        WANTED="$(trim "${BALLERINA_VERSION:-latest}")"
-        if bal_matches "$WANTED"; then
-          set_output installed true
-        else
-          CURRENT=""
-          has_bal && CURRENT="$(bal_version)"
-          INSTALLED="Ballerina $WANTED"
-          [ "$WANTED" != latest ] || INSTALLED="the latest Ballerina"
-          if has_bal && [ -z "$CURRENT" ]; then
-            echo "A bal command is on the path, but its version could not be read from 'bal version', so $INSTALLED is installed."
-          elif has_bal && [ "$WANTED" = latest ]; then
-            echo "Ballerina $CURRENT is on the path, but the scan tool needs $MIN_BALLERINA_VERSION or later, so the latest Ballerina is installed."
-          elif has_bal; then
-            echo "Ballerina $CURRENT is on the path, but ballerina-version is $WANTED, so Ballerina $WANTED is installed."
-          fi
-          remove_ballerina_debs
-          set_output installed false
-        fi
+        TOOL_VERSION: ${{ inputs.tool-version }}
+        CATEGORY: ${{ inputs.category }}
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/resolve-versions.sh"
 
     - name: Set up Ballerina
       id: setup-ballerina
-      if: steps.find.outputs.count != '0' && steps.bal.outputs.installed != 'true'
+      if: steps.find.outputs.count != '0' && steps.versions.outputs.install == 'true'
       uses: ballerina-platform/setup-ballerina@585120e3f0e540bf127376ee6e75d39e8ce6aaa4 # v1.1.5
       with:
-        version: ${{ inputs.ballerina-version }}
+        version: ${{ steps.versions.outputs.ballerina-version }}
         github-token: ${{ inputs.github-token }}
 
     - name: Install the scan tool
@@ -192,7 +175,7 @@ runs:
       if: steps.find.outputs.count != '0'
       shell: bash
       env:
-        TOOL_VERSION: ${{ inputs.tool-version }}
+        TOOL_VERSION: ${{ steps.versions.outputs.tool-version }}
         CATEGORY: ${{ inputs.category }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/install-scan-tool.sh"
 
@@ -214,6 +197,8 @@ runs:
       env:
         SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
         SONARQUBE: ${{ steps.validate.outputs.sonarqube }}
+        SCAN_BALLERINA_VERSION: ${{ steps.tool.outputs.ballerina-version }}
+        SCAN_TOOL_VERSION: ${{ steps.tool.outputs.tool-version }}
         SCANNER_BIN: ${{ steps.sonarqube-tools.outputs.scanner-bin }}
         PLATFORM_CONFIG: ${{ inputs.platform-config }}
         INCLUDE_RULES: ${{ inputs.include-rules }}
@@ -268,6 +253,7 @@ runs:
             (steps.validate.outcome != 'success' && 'validate the inputs') ||
             (steps.find.outcome != 'success' && 'find packages') ||
             (steps.sonarqube.outcome == 'failure' && 'resolve the SonarQube settings') ||
+            (steps.versions.outcome == 'failure' && 'resolve the Ballerina and scan tool versions') ||
             (steps.setup-ballerina.outcome == 'failure' && 'set up Ballerina') ||
             (steps.tool.outcome == 'failure' && 'install the scan tool') ||
             (steps.sonarqube-tools.outcome == 'failure' && 'install SonarScanner and the platform plugin') ||

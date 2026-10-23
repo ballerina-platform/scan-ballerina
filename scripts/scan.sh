@@ -19,8 +19,8 @@
 # fails the step. A failed SonarQube pass only fails SonarQube: the SARIF file is still produced,
 # and report.sh fails the step at the end.
 #
-# Inputs (environment): SCAN_WORK_DIR, SONARQUBE, PLATFORM_CONFIG, SCANNER_BIN, INCLUDE_RULES,
-# EXCLUDE_RULES, CATEGORY.
+# Inputs (environment): SCAN_WORK_DIR, SONARQUBE, SCAN_BALLERINA_VERSION and SCAN_TOOL_VERSION
+# (the installed Ballerina and scan tool), PLATFORM_CONFIG, SCANNER_BIN, INCLUDE_RULES, EXCLUDE_RULES, CATEGORY.
 # Writes: $SCAN_WORK_DIR/reports/<index>.sarif per unit, in the order of units.json,
 # $SCAN_WORK_DIR/sonarqube-uploads.json and $SCAN_WORK_DIR/sonarqube-failures.txt, one line per
 # package whose SonarQube pass failed.
@@ -33,6 +33,24 @@ source "$SCRIPT_DIR/lib.sh"
 WORK="${SCAN_WORK_DIR:?SCAN_WORK_DIR is not set}"
 ROOT="$(workspace_root)"
 cd "$ROOT"
+
+# Ballerina before 2201.13.0 has no workspaces, and older scan tools load only packages, so
+# workspaces fail before anything is scanned instead of failing in bal scan.
+BAL="${SCAN_BALLERINA_VERSION:-}"
+TOOL="${SCAN_TOOL_VERSION:-}"
+UNSUPPORTED=""
+if [ -n "$BAL" ] && ! version_ge "$BAL" "$MIN_WORKSPACE_BALLERINA_VERSION"; then
+  UNSUPPORTED="Ballerina $BAL"
+elif [ -n "$TOOL" ] && ! version_ge "$TOOL" "$MIN_WORKSPACE_TOOL_VERSION"; then
+  UNSUPPORTED="bal scan $TOOL"
+fi
+if [ -n "$UNSUPPORTED" ]; then
+  WORKSPACES="$(jq -r '.[] | select(.kind == "workspace") | .path' "$WORK/units.json")"
+  if [ -n "$WORKSPACES" ]; then
+    while IFS= read -r ws; do log_error "'$ws' is a workspace, which $UNSUPPORTED does not support."; done <<< "$WORKSPACES"
+    die "This run uses $UNSUPPORTED, which does not support workspaces. Workspaces need Ballerina $MIN_WORKSPACE_BALLERINA_VERSION or later and bal scan $MIN_WORKSPACE_TOOL_VERSION or later: set ballerina-version to $MIN_WORKSPACE_BALLERINA_VERSION or later, and leave tool-version empty or set it to $MIN_WORKSPACE_TOOL_VERSION or later. Or leave the workspaces out with exclude-paths."
+  fi
+fi
 
 RULE_ARGS=()
 INCLUDE="$(split_list "${INCLUDE_RULES:-}" | paste -sd, -)"

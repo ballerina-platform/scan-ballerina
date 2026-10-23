@@ -89,21 +89,28 @@ check_boolean job-summary "$(trim "${JOB_SUMMARY:-true}")"
 ARTIFACTS="$(trim "${ARTIFACTS:-false}")"
 check_boolean artifacts "$ARTIFACTS"
 
-# Versions below the minimums fail before anything is installed. Whether a pair is compatible is
-# checked when the scan tool is installed.
-BALLERINA_VERSION="$(trim "${BALLERINA_VERSION:-latest}")"
-if [[ ! "$BALLERINA_VERSION" =~ ^(latest|nightly.*|[0-9]+(\.[0-9]+)*([.-][A-Za-z0-9.-]+)?)$ ]]; then
-  error "ballerina-version must be 'latest' or a version such as 2201.13.3, got '$BALLERINA_VERSION'."
-elif [[ "$BALLERINA_VERSION" =~ ^[0-9] ]] && ! version_ge "$BALLERINA_VERSION" "$MIN_BALLERINA_VERSION"; then
-  error "ballerina-version is $BALLERINA_VERSION, but bal scan $MIN_TOOL_VERSION and later need Ballerina $MIN_BALLERINA_VERSION or later. Set $MIN_BALLERINA_VERSION or later, or leave it out to use the latest Ballerina."
-fi
+# Versions below the minimums, and a given Ballerina older than a given scan tool needs, fail
+# before anything is installed. latest is checked once resolve-versions.sh resolves it, and the
+# installed pair again when the scan tool is installed.
 TOOL_VERSION="$(trim "${TOOL_VERSION:-}")"
-if [ -n "$TOOL_VERSION" ]; then
+TOOL_OK=false
+if [ -n "$TOOL_VERSION" ] && [ "$TOOL_VERSION" != latest ]; then
   if [[ ! "$TOOL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
-    error "tool-version must be a version such as $MIN_TOOL_VERSION, got '$TOOL_VERSION'."
+    error "tool-version must be empty, latest or a version such as $MIN_TOOL_VERSION, got '$TOOL_VERSION'."
   elif ! version_ge "$TOOL_VERSION" "$MIN_TOOL_VERSION"; then
-    error "tool-version is $TOOL_VERSION, but the oldest supported version is $MIN_TOOL_VERSION. Set $MIN_TOOL_VERSION or later, or leave it out to use the latest version compatible with the Ballerina version."
+    error "tool-version is $TOOL_VERSION, but the oldest supported version is $MIN_TOOL_VERSION. Set $MIN_TOOL_VERSION or later, or leave it empty to use the latest version compatible with the Ballerina version."
+  else
+    TOOL_OK=true
   fi
+fi
+BALLERINA_VERSION="$(trim "${BALLERINA_VERSION:-}")"
+if [[ ! "$BALLERINA_VERSION" =~ ^(latest|nightly.*|[0-9]+(\.[0-9]+)*([.-][A-Za-z0-9.-]+)?)?$ ]]; then
+  error "ballerina-version must be empty, latest or a version such as 2201.13.3, got '$BALLERINA_VERSION'."
+elif [[ "$BALLERINA_VERSION" =~ ^[0-9] ]] && ! version_ge "$BALLERINA_VERSION" "$MIN_BALLERINA_VERSION"; then
+  error "ballerina-version is $BALLERINA_VERSION, but bal scan $MIN_TOOL_VERSION and later need Ballerina $MIN_BALLERINA_VERSION or later. Set $MIN_BALLERINA_VERSION or later, or leave it empty to use a Ballerina that runs the scan tool."
+elif [[ "$BALLERINA_VERSION" =~ ^[0-9] ]] && [ "$TOOL_OK" = true ] \
+  && ! version_ge "$BALLERINA_VERSION" "$(tool_min_ballerina "$TOOL_VERSION")"; then
+  error "ballerina-version is $BALLERINA_VERSION, but bal scan $TOOL_VERSION needs Ballerina $(tool_min_ballerina "$TOOL_VERSION") or later. Set a later ballerina-version, or an older tool-version that supports Ballerina $BALLERINA_VERSION, or leave either one empty to use a compatible version."
 fi
 
 # Platform configuration
@@ -233,13 +240,6 @@ if selected sonarqube; then
     SONARQUBE=false
   elif [ "${EMPTY_TOKENS:-0}" -gt 0 ]; then
     error "platform-config.sonarqube has an empty token. Pass each token from a secret, such as token: \${{ secrets.SONAR_TOKEN }}, and check that the secret is set."
-  fi
-  if [ "$SONARQUBE" = true ]; then
-    while IFS= read -r v; do
-      [ -n "$v" ] && log_warning "platform-config.sonarqube sets plugin-version to latest, which may not match the scan tool. Pin a plugin version for reproducible runs."
-    done < <(jq -r '.sonarqube | select(type == "object")
-      | [(., (.packages // [] | select(type == "array") | .[] | select(type == "object")))
-         | select(."plugin-version" == "latest")] | if length > 0 then "latest" else empty end' <<< "$CONFIG")
   fi
 fi
 

@@ -10,12 +10,91 @@
 set -euo pipefail
 
 # The oldest supported scan tool, and the oldest Ballerina that runs it.
-MIN_TOOL_VERSION="0.12.0"
-MIN_BALLERINA_VERSION="2201.13.0"
+MIN_TOOL_VERSION="0.11.0"
+MIN_BALLERINA_VERSION="2201.12.0"
+
+# The oldest Ballerina each scan tool needs, newest first: the first scan tool version of a range,
+# and the Ballerina update it was built with. A scan tool runs on that update and later ones.
+TOOL_BALLERINA_VERSIONS="\
+0.12.0 2201.13.0
+0.11.0 2201.12.0
+"
+
+# The first Ballerina with workspaces, and the first scan tool that scans them. Older scan tools
+# load only packages.
+MIN_WORKSPACE_BALLERINA_VERSION="2201.13.0"
+MIN_WORKSPACE_TOOL_VERSION="0.12.0"
+
+# Prints the oldest Ballerina that runs scan tool version $1, or that runs any supported scan tool
+# when $1 is empty.
+tool_min_ballerina() {
+  local tool ballerina
+  if [ -n "$1" ]; then
+    while read -r tool ballerina; do
+      [ -n "$tool" ] || continue
+      if version_ge "$1" "$tool"; then
+        printf '%s' "$ballerina"
+        return
+      fi
+    done <<< "$TOOL_BALLERINA_VERSIONS"
+  fi
+  printf '%s' "$MIN_BALLERINA_VERSION"
+}
 
 # The Central API 'bal tool pull scan' uses to pick the latest scan tool for a Ballerina version.
 CENTRAL_TOOLS_URL="https://api.central.ballerina.io/2.0/registry/tools"
 CENTRAL_PLATFORM="java21"
+# The Central APIs for the latest Ballerina, which setup-ballerina also uses, and for every
+# published scan tool version.
+CENTRAL_LATEST_BALLERINA_URL="https://api.central.ballerina.io/2.0/update-tool/distributions/latest?version=2201.0.0"
+CENTRAL_SCAN_TOOL_VERSIONS_URL="https://api.central.ballerina.io/2.0/registry/packages/ballerina/tool_scan"
+
+# Prints the version cached as $1, or else runs the rest of the arguments and caches what it prints,
+# once per job. Fails when that is not a version.
+cached_version() {
+  local cache version
+  cache="$(tool_cache_dir)/$1"
+  shift
+  if [ -s "$cache" ]; then
+    cat "$cache"
+    return
+  fi
+  version="$("$@")" || return 1
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || return 1
+  printf '%s' "$version" > "$cache"
+  printf '%s' "$version"
+}
+
+central_get() {
+  curl -fsSL --proto '=https' --retry 3 "$@"
+}
+
+# Prints the latest scan tool compatible with Ballerina $1. Central picks it from the Ballerina
+# version in the User-Agent, as it does for 'bal tool pull scan'.
+latest_compatible_tool_version() {
+  cached_version "scan-tool-for-ballerina-$1" fetch_compatible_tool_version "$1"
+}
+fetch_compatible_tool_version() {
+  central_get -H "User-Agent: $1" -H "Ballerina-Platform: $CENTRAL_PLATFORM" "$CENTRAL_TOOLS_URL/scan" \
+    | jq -r '.version // empty'
+}
+
+# Prints the latest scan tool release, whatever Ballerina it needs. Pre-releases are left out.
+latest_tool_version() {
+  cached_version latest-scan-tool fetch_latest_tool_version
+}
+fetch_latest_tool_version() {
+  central_get "$CENTRAL_SCAN_TOOL_VERSIONS_URL" | jq -r '.[]' \
+    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n1
+}
+
+# Prints the latest Ballerina release.
+latest_ballerina_version() {
+  cached_version latest-ballerina fetch_latest_ballerina_version
+}
+fetch_latest_ballerina_version() {
+  central_get "$CENTRAL_LATEST_BALLERINA_URL" | jq -r '.major // empty'
+}
 
 # The SonarQube platform plugin, published to GitHub Packages, which needs a token with
 # read:packages. Older versions do not work with the supported scan tools.
@@ -25,7 +104,7 @@ SONAR_PLUGIN_URL="https://maven.pkg.github.com/ballerina-platform/sonar-ballerin
 # Known plugin versions, newest first: version, oldest scan tool it works with, first scan tool it
 # is not known to work with, and the SHA-256 a download must match.
 SONAR_PLUGINS="\
-0.3.0 0.12.0 0.13.0 b1e962ecc2e5337d92f7a8043089f40e1f284f2133328835d6c4987322ea98a5
+0.3.0 0.11.0 0.13.0 b1e962ecc2e5337d92f7a8043089f40e1f284f2133328835d6c4987322ea98a5
 "
 
 # Prints the SHA-256 of platform plugin version $1, failing when this release does not know it.
@@ -217,18 +296,13 @@ bal_version() {
   bal_cmd version 2> /dev/null | tr -d '\r' | sed -n 's/^Ballerina \([0-9][^ ]*\).*/\1/p' | head -n1
 }
 
-# Succeeds when the bal on the path can be used for ballerina-version $1: latest, a version, or a
-# prefix of one, such as 2201.13.
+# Succeeds when the bal on the path is Ballerina $1: a version, or a prefix of one, such as 2201.13.
 bal_matches() {
   local current
   has_bal || return 1
   current="$(bal_version)"
   [ -n "$current" ] || return 1
-  if [ "$1" = latest ]; then
-    version_ge "$current" "$MIN_BALLERINA_VERSION"
-  else
-    [ "$current" = "$1" ] || [[ "$current" == "$1".* ]]
-  fi
+  [ "$current" = "$1" ] || [[ "$current" == "$1".* ]]
 }
 
 # Removes the Ballerina distributions installed from .deb packages. Each version is its own package

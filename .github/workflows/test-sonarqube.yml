@@ -411,6 +411,55 @@ jobs:
           # The package has no Scan.toml, so the one the action wrote for the scan must be deleted.
           [ -z "$(git status --porcelain -- test)" ] || fail "The scan left changes in test: $(git status --porcelain -- test)"
 
+  # bal scan 0.11.0 gets platform plugin 0.3.0, the oldest supported plugin, by default.
+  sonarqube-oldest-tool:
+    name: SonarQube plugin for the oldest scan tool
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Scan
+        id: scan
+        continue-on-error: true
+        uses: ./
+        with:
+          ballerina-version: 2201.12.0
+          tool-version: 0.11.0
+          paths: test/oldest-ballerina
+          category: oldest-tool
+          artifacts: true
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: oldest
+
+      - name: Check that plugin 0.3.0 was used
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.scan.outcome }}
+          RESULT: ${{ steps.scan.outputs.result }}
+          SARIF_FILE: ${{ steps.scan.outputs.sarif-file }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-oldest-tool-*)"
+          jq . "$WORK/sonarqube.json"
+          jq -e '.[0].plugin == {kind: "version", value: "0.3.0"}' "$WORK/sonarqube.json" > /dev/null \
+            || fail "The plugin must default to version 0.3.0 for bal scan 0.11.0"
+          PLUGIN_FILE="$(jq -r '.[0]."plugin-file"' "$WORK/sonarqube.json")"
+          [ "$PLUGIN_FILE" = "$RUNNER_TEMP/scan-ballerina-tools/sonar-platform-plugin-0.3.0.jar" ] || fail "plugin-file is '$PLUGIN_FILE'"
+          # The plugin ran with bal scan 0.11.0 and started SonarScanner.
+          grep -q 'SonarScanner CLI' "$WORK/logs/sonarqube-0.log" || fail "The plugin did not run SonarScanner"
+          [ "$OUTCOME" = failure ] || fail "The step should fail, since the server does not exist, but its outcome is '$OUTCOME'"
+          [ "$RESULT" = error ] || fail "result is '$RESULT', expected error"
+          [ -f "$SARIF_FILE" ] || fail "A failed SonarQube scan must not stop the SARIF file, got sarif-file '$SARIF_FILE'"
+          [ -z "$(git status --porcelain -- test)" ] || fail "The scan left changes in test: $(git status --porcelain -- test)"
+
   sonarqube-properties-file:
     name: SonarQube settings from sonar-project.properties
     runs-on: ubuntu-latest

@@ -93,8 +93,10 @@ jobs:
           # The error each step must report, by step ID, which is also its category.
           EXPECTED: |
             {
-              "old-tool-version": "tool-version is 0.11.0, but the oldest supported version is 0.12.0",
-              "old-ballerina-version": "ballerina-version is 2201.12.0, but bal scan 0.12.0 and later need Ballerina 2201.13.0 or later"
+              "old-tool-version": "tool-version is 0.10.0, but the oldest supported version is 0.11.0",
+              "old-ballerina-version": "ballerina-version is 2201.11.0, but bal scan 0.11.0 and later need Ballerina 2201.12.0 or later",
+              "mismatched-versions": "ballerina-version is 2201.12.0, but bal scan 0.12.0 needs Ballerina 2201.13.0 or later",
+              "latest-tool-version": "ballerina-version is 2201.12.0, but the latest bal scan"
             }
         run: |
           set -euo pipefail
@@ -108,6 +110,22 @@ jobs:
               <<< "$ANNOTATIONS" > /dev/null || fail "$id: no error containing: $message"
           done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<< "$EXPECTED")
           [ "$FAILURES" -eq 0 ] || exit 1
+
+      - name: Check the error of a workspace on Ballerina 2201.12.0
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          ANNOTATIONS="$(bash .github/scripts/annotations.sh 'Setup / Oldest Ballerina and scan tool versions')"
+          jq . <<< "$ANNOTATIONS"
+          jq -e 'any(.[]; .title == "bal scan (workspace)" and .annotation_level == "failure"
+              and (.message | contains("This run uses Ballerina 2201.12.0, which does not support workspaces")))' \
+            <<< "$ANNOTATIONS" > /dev/null || fail "The workspace must fail because Ballerina 2201.12.0 does not support workspaces"
+          jq -e 'any(.[]; .title == "bal scan (workspace)"
+              and (.message | contains("'"'"'test/projects/workspace'"'"' is a workspace, which Ballerina 2201.12.0 does not support")))' \
+            <<< "$ANNOTATIONS" > /dev/null || fail "The error must name the workspace"
 
       - name: Check the errors of the invalid SonarQube settings
         shell: bash

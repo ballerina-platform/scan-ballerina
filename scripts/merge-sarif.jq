@@ -45,10 +45,24 @@ def help_markdown($desc):
     (.helpUri // empty | "", "[Rule documentation](\(.))")
   ] | join("\n");
 
+# The [major, minor] version of the bal scan that wrote a tool.driver, [] when it is not known.
+def tool_version:
+  [.semanticVersion // "" | capture("^(?<major>[0-9]+)\\.(?<minor>[0-9]+)") | (.major | tonumber), (.minor | tonumber)];
+
 # bal scan up to 0.12.x reports the rule's title as every result's message, not one about the finding.
 def generic_messages:
-  (.semanticVersion // "" | capture("^(?<major>[0-9]+)\\.(?<minor>[0-9]+)") | [(.major | tonumber), (.minor | tonumber)] <= [0, 12])
-  // false;
+  tool_version as $v | $v != [] and $v <= [0, 12];
+
+# bal scan before 0.12.0 sets no ruleKind, but takes each rule's level from its kind.
+def kinds_from_levels:
+  tool_version as $v | $v != [] and $v < [0, 12];
+
+def with_kind:
+  if .properties.ruleKind then .
+  else
+    {"error": "BUG", "warning": "VULNERABILITY", "note": "CODE_SMELL"}[.defaultConfiguration.level // ""] as $kind
+    | if $kind then .properties.ruleKind = $kind else . end
+  end;
 
 def enrich:
   (.fullDescription.text // .shortDescription.text // .id) as $desc
@@ -71,9 +85,10 @@ def shift_indexes($offset):
 | ($runs | map(.artifacts // [] | length)) as $artifact_counts
 | ($runs | map(.artifacts[]?)) as $artifacts
 | ($runs[0].tool.driver | generic_messages) as $generic
+| ($runs[0].tool.driver | kinds_from_levels) as $legacy
 | ($runs | map(.tool.driver.rules[]?) | unique_by(.id)) as $tool_rules
 | ($tool_rules | map(select(.fullDescription.text) | {key: .id, value: .fullDescription.text}) | from_entries) as $descriptions
-| ($tool_rules | map(enrich)) as $rules
+| ($tool_rules | map(if $legacy then with_kind else . end | enrich)) as $rules
 | ($rules | to_entries | map({key: .value.id, value: .key}) | from_entries) as $index
 | {
     "$schema": ($all[0]["$schema"] // "https://json.schemastore.org/sarif-2.1.0.json"),

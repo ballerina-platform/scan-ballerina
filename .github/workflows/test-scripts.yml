@@ -50,6 +50,25 @@ jobs:
           diff -u test/sarif/expected.sarif <(jq -S . "$WORK/golden.sarif")
           diff -u test/sarif/expected-findings.json <(jq -S . "$WORK/findings.json")
 
+      # test/sarif/legacy holds a report of bal scan 0.11.0, which sets no rule kind, help or full
+      # description, and takes each rule's level from its kind.
+      - name: Merge a bal scan 0.11.0 report
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          WORK="$RUNNER_TEMP/sarif-legacy"
+          mkdir -p "$WORK"
+          cp -r test/sarif/legacy/units.json test/sarif/legacy/reports "$WORK/"
+          SCAN_WORK_DIR="$WORK" EXCLUDE_TESTS=true EXCLUDE_PATHS= CATEGORY=legacy bash scripts/merge-sarif.sh
+          RULES="$(jq -c '.runs[0].tool.driver.rules | map({key: .id, value: [.properties.ruleKind, (.properties.tags // [])]}) | from_entries' "$WORK/legacy.sarif")"
+          [ "$RULES" = '{"ballerina/example:1":["VULNERABILITY",["security"]],"ballerina/example:2":["BUG",[]],"ballerina:1":["CODE_SMELL",["maintainability"]]}' ] \
+            || fail "Each rule's kind must be taken from its level: $RULES"
+          jq -e '.runs[0].tool.driver.rules | all(.help.markdown | contains("- **Type:** "))' "$WORK/legacy.sarif" > /dev/null \
+            || fail "Each rule's help must name its type"
+          [ "$(jq -c '[.[] | .severity]' "$WORK/findings.json")" = '["low","medium","high"]' ] \
+            || fail "The severities must follow the levels: $(jq -c . "$WORK/findings.json")"
+
       - name: Validate the merged file against the SARIF 2.1.0 schema
         shell: bash
         run: |
