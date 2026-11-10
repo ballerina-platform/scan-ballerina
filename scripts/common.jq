@@ -48,9 +48,13 @@ def map_uri(f):
 def uri_path:
   if test("^(/|[A-Za-z][A-Za-z0-9+.-]*:)") then . else split("/") | map(@uri) | join("/") end;
 
-# Escapes a string for use inside a regex.
-def regex_escape:
-  gsub("(?<c>[.+*?^$(){}|\\[\\]\\\\])"; "\\\(.c)");
+# True when a SARIF result is suppressed: it has suppressions, and none is under review or rejected.
+def suppressed:
+  (.suppressions // []) as $s | ($s | length) > 0 and all($s[]; (.status // "accepted") == "accepted");
+
+# The justification of a suppressed result, "" when it gives none.
+def justification:
+  [.suppressions[]? | .justification // empty | select(. != "")] | join("; ");
 
 # The action severity of a SARIF result: high, medium, low, or none when it is not counted.
 # A result without a level takes its rule's default level, and warning when there is none.

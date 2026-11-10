@@ -1,5 +1,3 @@
-# bal scan reads only the members' Scan.toml files, so this platform, whose JAR does not exist,
-# must not be loaded.
-[[platform]]
-name = "missing"
-path = "./missing-platform.jar"
+# Used by each member that has no Scan.toml of its own, so the self-assignment in shipping is not reported.
+[rule]
+exclude = ["ballerina:10"]

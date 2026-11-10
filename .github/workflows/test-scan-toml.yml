@@ -8,8 +8,8 @@ permissions:
 
 jobs:
   # The packages in test/restore have Scan.toml files with [[platform]] entries, sub-tables, odd
-  # spacing and no final newline, which the action changes for a scan and must restore byte for
-  # byte when that scan fails.
+  # spacing and no final newline. The SARIF scan must leave them as they are, and the SonarQube scan
+  # changes them and must restore them byte for byte when it fails.
   scan-toml-restore:
     name: Scan.toml restored after a failed scan
     runs-on: ubuntu-latest
@@ -23,8 +23,7 @@ jobs:
         shell: bash
         run: sha256sum test/restore/*/Scan.toml | tee "$RUNNER_TEMP/scan-toml.sha256"
 
-      # The package does not compile, so the SARIF scan fails while its [[platform]] entries are
-      # hidden.
+      # The package does not compile, so the SARIF scan fails.
       - name: Failed SARIF scan
         id: sarif-failure
         continue-on-error: true
@@ -138,7 +137,7 @@ jobs:
         shell: bash
         run: sha256sum test/remote-scan-toml/Ballerina.toml | tee "$RUNNER_TEMP/ballerina-toml.sha256"
 
-      # The [[platform]] entry is hidden from the copy, so bal scan writes the SARIF report.
+      # bal scan reads the downloaded copy, whose [[platform]] entry does not stop the SARIF report.
       - name: Scan without platforms
         id: sarif
         uses: ./
@@ -176,7 +175,7 @@ jobs:
           fail() { echo "::error::$1"; FAILURES=$((FAILURES + 1)); }
 
           [ "$SARIF_RESULT" = passed ] || fail "sarif: result is '$SARIF_RESULT', expected passed"
-          [ -f "$SARIF_FILE" ] || fail "sarif: no SARIF file, so the [[platform]] entry was not hidden"
+          [ -f "$SARIF_FILE" ] || fail "sarif: no SARIF file, although bal scan uses a [[platform]] entry only when --platforms names it"
           [ "$SARIF_TOTAL" = 0 ] || fail "sarif: total-count is '$SARIF_TOTAL', expected 0, since the remote Scan.toml excludes ballerina:1"
 
           SONARQUBE_WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-remote-scan-toml-sonarqube-*)"

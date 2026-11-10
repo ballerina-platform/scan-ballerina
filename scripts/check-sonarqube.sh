@@ -4,8 +4,8 @@
 #
 # Each setting is resolved field by field: the package's item under platform-config packages,
 # then the platform level of platform-config, then the package's Scan.toml and properties file.
-# Paths in platform-config are relative to the repository root, and paths in Scan.toml are
-# relative to the package.
+# Paths in platform-config are relative to the repository root. Paths in Scan.toml are relative to
+# the folder of Scan.toml, or to the package for a remote one, as bal scan resolves them.
 #
 # Inputs (environment): SCAN_WORK_DIR, PLATFORM_CONFIG, CATEGORY.
 # Writes: $SCAN_WORK_DIR/sonarqube.json, a list of {package, scan-toml, scan-toml-kind, plugin,
@@ -13,6 +13,13 @@
 # is then the downloaded copy), or none when the package has no Scan.toml. plugin is {kind, value},
 # where kind is version, file, url, or default (resolved by install-sonarqube.sh). Tokens are not
 # written; scan.sh reads them from PLATFORM_CONFIG.
+# Outputs: the Actions cache of SonarScanner, which action.yml restores and saves:
+#   scanner-dir, scanner-key, scanner-present  The SonarScanner CLI folder, its cache key, and true
+#                                              when an earlier use of the action in the job installed it.
+#   sonar-user-home, sonar-cache-dir, sonar-cache-prefix, sonar-cache-present  SONAR_USER_HOME of
+#                                              SonarScanner, its cache folder of the servers'
+#                                              analyzers, the prefix of its cache keys, and true when
+#                                              an earlier use of the action in the job has it.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -92,6 +99,7 @@ while IFS= read -r unit; do
   scan_toml_name="${scan_url:-$scan_toml}"
   scan_toml_kind="none"
   entry='{}'
+  base="$(scan_toml_base_dir "$pkg" "$scan_toml" "$scan_url")"
   if [ -n "$scan_toml" ]; then
     scan_toml_kind="file"
     [ -z "$scan_url" ] || scan_toml_kind="remote"
@@ -101,10 +109,8 @@ while IFS= read -r unit; do
     fi
     entry="$(jq -c 'map(select(.name == "sonarqube")) | first // {}' <<< "$platforms")"
     # The SonarQube scan replaces this entry with one for the resolved plugin.
-    left="$(drop_platforms sonarqube < "$scan_toml" \
-      | yq -p toml -o json -I0 '[.platform // [] | .[] | select(.name == "sonarqube")] | length' 2> /dev/null | tr -d '\r')" || left=""
-    if [ "$left" != 0 ]; then
-      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml_name' is in a form the action cannot replace. Write it as a [[platform]] table with name = \"sonarqube\" on its own line."
+    if ! sonarqube_entry_replaceable "$scan_toml"; then
+      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml_name' is in a form the action cannot replace. Write it as a [[platform]] table with name = \"sonarqube\" on its own line, without a multi-line string that holds a line starting with '['."
       continue
     fi
   fi
@@ -125,13 +131,13 @@ while IFS= read -r unit; do
     elif [[ "$entry_path" =~ ^https:// ]]; then
       plugin="$(jq -nc --arg v "$entry_path" '{kind: "url", value: $v}')"
     elif [[ "$entry_path" =~ ^[a-zA-Z][a-zA-Z0-9+.-]*:// ]]; then
-      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml_name' has the path '$entry_path'. Use an https URL or a path relative to the package."
+      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml_name' has the path '$entry_path'. Use an https URL or a relative path."
     elif is_absolute_path "$entry_path"; then
-      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml_name' has the absolute path '$entry_path', which points to one machine. Use a path relative to the package, an https URL, or set plugin-version under platform-config.sonarqube."
-    elif [ ! -f "$pkg/$(to_unix_path "$entry_path")" ]; then
-      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml_name' has the path '$entry_path', which is not an existing file relative to the package."
+      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml_name' has the absolute path '$entry_path', which points to one machine. Use a relative path, an https URL, or set plugin-version under platform-config.sonarqube."
+    elif [ ! -f "$base/$(to_unix_path "$entry_path")" ]; then
+      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml_name' has the path '$entry_path', which is not an existing file relative to '$base'."
     else
-      plugin="$(jq -nc --arg v "$pkg/$(to_unix_path "$entry_path")" '{kind: "file", value: $v}')"
+      plugin="$(jq -nc --arg v "$base/$(to_unix_path "$entry_path")" '{kind: "file", value: $v}')"
     fi
   fi
 
@@ -146,7 +152,7 @@ while IFS= read -r unit; do
       continue
     fi
   elif [ -n "$entry_properties" ]; then
-    properties_file="$pkg/$(to_unix_path "$entry_properties")"
+    properties_file="$base/$(to_unix_path "$entry_properties")"
     is_absolute_path "$entry_properties" && properties_file="$(to_unix_path "$entry_properties")"
     if [ ! -f "$properties_file" ]; then
       error "Package '$pkg': sonarProjectPropertiesPath in '$scan_toml_name' is '$entry_properties', which does not exist."
@@ -210,3 +216,18 @@ fi
 
 printf '%s\n' "$RESOLVED" > "$WORK/sonarqube.json"
 jq -r '.[] | "SonarQube project for \(.package): \(."project-key") on \(."host-url")"' <<< "$RESOLVED"
+
+# The Actions cache, restored before the tools are installed. Each set of servers gets its own
+# cache, since SonarScanner downloads the analyzers the server has installed.
+DIST="$(sonar_scanner_dist)" || die "SonarQube reporting does not support the runner's operating system, ${RUNNER_OS:-$(uname -s)}."
+SCANNER_DIR="$(sonar_scanner_dir "$DIST")"
+SERVERS="$(jq -r '[.[]."host-url" | rtrimstr("/")] | unique | join("\n")' <<< "$RESOLVED" | sha256_of /dev/stdin | cut -c1-16)"
+SONAR_HOME="$(sonar_user_home "$SERVERS")"
+present() { [ -d "$1" ] && [ -n "$(ls -A "$1" 2> /dev/null)" ] && echo true || echo false; }
+set_output scanner-dir "$(to_native_path "$SCANNER_DIR")"
+set_output scanner-key "scan-ballerina-sonar-scanner-$PINNED_SONAR_SCANNER_VERSION-$DIST"
+set_output scanner-present "$(present "$SCANNER_DIR")"
+set_output sonar-user-home "$(to_native_path "$SONAR_HOME")"
+set_output sonar-cache-dir "$(to_native_path "$SONAR_HOME/cache")"
+set_output sonar-cache-prefix "scan-ballerina-sonar-cache-$DIST-$SERVERS-"
+set_output sonar-cache-present "$(present "$SONAR_HOME/cache")"

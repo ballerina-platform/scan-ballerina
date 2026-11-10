@@ -23,8 +23,8 @@
 hs_err_pid*
 replay_pid*
 
-# Ballerina build and scan output of the test packages
+# Ballerina build and scan output of the test packages. Dependencies.toml is kept, since bal scan
+# scans only packages whose dependencies it locks.
 target/
-Dependencies.toml
 .scannerwork/
 ballerina-static-code-analysis-results.json

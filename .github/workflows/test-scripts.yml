@@ -30,9 +30,9 @@ jobs:
           diff -u test/annotations/expected.txt <(grep '^::' "$WORK/stdout.txt")
 
   # test/sarif holds three bal scan reports: of a package whose path has a space and of a
-  # workspace, with run.artifacts, artifact indexes, a test file, a '#' in a file name and a
-  # backslash in a URI, and of a package whose results name their rule by rule.id, rule.index or
-  # ruleIndex only, or not at all. The merged file must match test/sarif/expected.sarif.
+  # workspace, with run.artifacts, artifact indexes, a test file among the artifacts, a '#' in a
+  # file name and a backslash in a URI, and of a package whose results name their rule by rule.id,
+  # rule.index or ruleIndex only, or not at all. The merged file must match test/sarif/expected.sarif.
   sarif-golden:
     name: SARIF merging
     runs-on: ubuntu-latest
@@ -46,7 +46,7 @@ jobs:
           WORK="$RUNNER_TEMP/sarif-golden"
           mkdir -p "$WORK"
           cp -r test/sarif/units.json test/sarif/reports "$WORK/"
-          SCAN_WORK_DIR="$WORK" EXCLUDE_TESTS=true EXCLUDE_PATHS= CATEGORY=golden bash scripts/merge-sarif.sh
+          SCAN_WORK_DIR="$WORK" EXCLUDE_PATHS= CATEGORY=golden bash scripts/merge-sarif.sh
           diff -u test/sarif/expected.sarif <(jq -S . "$WORK/golden.sarif")
           diff -u test/sarif/expected-findings.json <(jq -S . "$WORK/findings.json")
 
@@ -60,7 +60,7 @@ jobs:
           WORK="$RUNNER_TEMP/sarif-legacy"
           mkdir -p "$WORK"
           cp -r test/sarif/legacy/units.json test/sarif/legacy/reports "$WORK/"
-          SCAN_WORK_DIR="$WORK" EXCLUDE_TESTS=true EXCLUDE_PATHS= CATEGORY=legacy bash scripts/merge-sarif.sh
+          SCAN_WORK_DIR="$WORK" EXCLUDE_PATHS= CATEGORY=legacy bash scripts/merge-sarif.sh
           RULES="$(jq -c '.runs[0].tool.driver.rules | map({key: .id, value: [.properties.ruleKind, (.properties.tags // [])]}) | from_entries' "$WORK/legacy.sarif")"
           [ "$RULES" = '{"ballerina/example:1":["VULNERABILITY",["security"]],"ballerina/example:2":["BUG",[]],"ballerina:1":["CODE_SMELL",["maintainability"]]}' ] \
             || fail "Each rule's kind must be taken from its level: $RULES"
@@ -69,15 +69,226 @@ jobs:
           [ "$(jq -c '[.[] | .severity]' "$WORK/findings.json")" = '["low","medium","high"]' ] \
             || fail "The severities must follow the levels: $(jq -c . "$WORK/findings.json")"
 
-      - name: Validate the merged file against the SARIF 2.1.0 schema
+      # test/sarif/suppressed holds a package whose results are suppressed as accepted, with and
+      # without a status, under review, or not at all (an empty array), and a package that sets no
+      # suppressions.
+      - name: Merge reports with suppressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          # Usage: merge NAME SUPPRESSIONS DISMISS_ALERTS
+          merge() {
+            local work="$RUNNER_TEMP/sarif-$1"
+            mkdir -p "$work"
+            cp -r test/sarif/suppressed/units.json test/sarif/suppressed/reports "$work/"
+            : > "$work/output.txt"
+            SCAN_WORK_DIR="$work" EXCLUDE_PATHS= CATEGORY="$1" SUPPRESSIONS="$2" \
+              DISMISS_ALERTS="$3" GITHUB_OUTPUT="$work/output.txt" bash scripts/merge-sarif.sh
+          }
+          output() { grep "^$2=" "$RUNNER_TEMP/sarif-$1/output.txt" | cut -d= -f2-; }
+
+          merge suppressed '' false
+          W="$RUNNER_TEMP/sarif-suppressed"
+          COUNTS="$(output suppressed high-count) $(output suppressed low-count) $(output suppressed total-count) $(output suppressed suppressed-count)"
+          [ "$COUNTS" = "1 2 3 2" ] || fail "Expected 1 high, 2 low, 3 counted and 2 suppressed findings, got $COUNTS"
+          jq -e '.runs[0].results | all(has("suppressions"))' "$W/suppressed.sarif" > /dev/null \
+            || fail "Every result of the merged run must have suppressions"
+          jq -e '[.runs[0].results[] | select(.locations[0].physicalLocation.artifactLocation.uri == "lib/lib.bal") | .suppressions] == [[]]' \
+            "$W/suppressed.sarif" > /dev/null || fail "A result without suppressions must get an empty array"
+          [ "$(jq '.runs[0].results | length' "$W/suppressed.sarif")" = 5 ] || fail "The SARIF file must keep the suppressed results"
+          [ "$(output suppressed upload-file)" != "$(output suppressed sarif-file)" ] || fail "Off the default branch, the upload must be a separate file"
+          [ "$(jq -c '[.runs[0].results[].locations[0].physicalLocation.region.startLine]' "$(output suppressed upload-file)")" = '[12,20,2]' ] \
+            || fail "The upload must leave out the suppressed results only"
+          [ "$(jq -r '[.[] | select(.suppressed) | .justification] | join("|")' "$W/results.json")" = 'Legacy hash kept for the migration window, SEC-1042|' ] \
+            || fail "results.json must keep each suppression's justification"
+
+          merge dismissed '' true
+          [ "$(output dismissed upload-file)" = "$(output dismissed sarif-file)" ] \
+            || fail "On the default branch, the upload must keep the suppressed results, so that their alerts can be dismissed"
+
+          merge ignored false false
+          COUNTS="$(output ignored total-count) $(output ignored suppressed-count)"
+          [ "$COUNTS" = "5 0" ] || fail "suppressions: false must count every finding, got $COUNTS"
+          [ "$(output ignored upload-file)" = "$(output ignored sarif-file)" ] || fail "suppressions: false must upload every result"
+
+      - name: Validate the merged files against the SARIF 2.1.0 schema
         shell: bash
         run: |
           set -euo pipefail
           curl -fsSL -o "$RUNNER_TEMP/sarif-schema.json" https://json.schemastore.org/sarif-2.1.0.json
-          pipx run check-jsonschema --schemafile "$RUNNER_TEMP/sarif-schema.json" "$RUNNER_TEMP/sarif-golden/golden.sarif"
+          pipx run check-jsonschema --schemafile "$RUNNER_TEMP/sarif-schema.json" \
+            "$RUNNER_TEMP/sarif-golden/golden.sarif" "$RUNNER_TEMP/sarif-suppressed/suppressed.sarif" \
+            "$RUNNER_TEMP/sarif-suppressed/upload/suppressed.sarif"
+
+  # alert-changes.jq picks the code scanning alerts to dismiss and reopen. The alerts are faked as
+  # the code scanning API lists them.
+  alert-changes:
+    name: Alert dismissal
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the alerts picked for each kind of result
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          WORK="$RUNNER_TEMP/alert-changes"
+          mkdir -p "$WORK"
+          MARKER="Suppressed in source with @scan:Suppress"
+          jq -n '[
+            {rule: "r:1", file: "a.bal", line: 1, column: 1, suppressed: true, justification: "Accepted"},
+            {rule: "r:1", file: "a.bal", line: 2, column: 1, suppressed: false, justification: ""},
+            {rule: "r:1", file: "a.bal", line: 3, column: 1, suppressed: true, justification: ""},
+            {rule: "r:1", file: "a.bal", line: 4, column: 1, suppressed: true, justification: ""},
+            {rule: "r:1", file: "a.bal", line: 4, column: 1, suppressed: false, justification: ""},
+            {rule: "r:1", file: "a.bal", line: 5, column: 1, suppressed: false, justification: ""}
+          ]' > "$WORK/results.json"
+          # alert(number, state, line, category, reason, comment)
+          jq -n --arg m "$MARKER" '
+            def alert($n; $state; $line; $cat; $reason; $comment):
+              {number: $n, state: $state, rule: {id: "r:1"}, dismissed_reason: $reason, dismissed_comment: $comment,
+               most_recent_instance: {category: $cat, location: {path: "a.bal", start_line: $line, start_column: 1}}};
+            alert(1; "open"; 1; "bal-scan/"; null; null),
+            alert(2; "open"; 2; "bal-scan/"; null; null),
+            alert(3; "open"; 3; "other/"; null; null),
+            alert(4; "open"; 4; "bal-scan/"; null; null),
+            alert(5; "dismissed"; 2; "bal-scan"; "won'"'"'t fix"; "\($m): old"),
+            alert(6; "dismissed"; 5; "bal-scan/"; "won'"'"'t fix"; "Dismissed by hand"),
+            alert(7; "dismissed"; 1; "bal-scan/"; "won'"'"'t fix"; "\($m).")
+          ' > "$WORK/alerts.jsonl"
+          CHANGES="$(jq -sc -f scripts/alert-changes.jq --slurpfile results "$WORK/results.json" \
+            --arg category bal-scan --arg marker "$MARKER" --arg reason "won't fix" --argjson limit 280 \
+            "$WORK/alerts.jsonl" | jq -sc .)"
+          EXPECTED="$(jq -nc --arg m "$MARKER" '[
+            {number: 1, change: {state: "dismissed", dismissed_reason: "won'"'"'t fix", dismissed_comment: "\($m): Accepted"}},
+            {number: 5, change: {state: "open"}}
+          ]')"
+          # 3 is another category, 4 has a suppressed and a reported result, 6 was dismissed by hand,
+          # and 7 is already dismissed.
+          [ "$CHANGES" = "$EXPECTED" ] || fail "Expected $EXPECTED, got $CHANGES"
+
+  # The supported scan tools are 0.13.0 and later, and the 0.11.x backport of its features from
+  # 0.11.1 for Ballerina 2201.12.x. 0.12.x has neither suppressions nor --exclude-tests.
+  scan-tool-support:
+    name: Scan tool support
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the supported scan tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          source scripts/lib.sh
+          for v in 0.11.1 0.11.2 0.13.0 0.13.1 0.14.0 1.0.0; do
+            tool_supported "$v" || fail "bal scan $v must be supported"
+          done
+          for v in 0.10.0 0.11.0 0.11.1-alpha 0.12.0 0.12.5 0.13.0-alpha; do
+            ! tool_supported "$v" || fail "bal scan $v must not be supported"
+          done
+          [ "$MIN_TOOL_VERSION $MIN_BALLERINA_VERSION" = "0.11.1 2201.12.0" ] || fail "The oldest supported pair is $MIN_TOOL_VERSION and $MIN_BALLERINA_VERSION"
+          [ "$NEWEST_LINE_TOOL_VERSION $NEWEST_LINE_BALLERINA_VERSION" = "0.13.0 2201.13.2" ] \
+            || fail "The newest line is $NEWEST_LINE_TOOL_VERSION on $NEWEST_LINE_BALLERINA_VERSION"
+          for pair in 0.11.1:2201.12.0 0.11.5:2201.12.0 0.13.0:2201.13.2 0.14.0:2201.13.2; do
+            [ "$(known_tool_min_ballerina "${pair%%:*}")" = "${pair#*:}" ] \
+              || fail "bal scan ${pair%%:*} must need Ballerina ${pair#*:}, got $(known_tool_min_ballerina "${pair%%:*}")"
+          done
+          for pair in 0.3.0:0.11.1:supported 0.3.0:0.13.0:supported 0.3.0:0.11.0:too-old 0.3.0:0.14.0:untested; do
+            IFS=: read -r plugin tool expected <<< "$pair"
+            [ "$(sonar_plugin_support "$plugin" "$tool")" = "$expected" ] \
+              || fail "Plugin $plugin with bal scan $tool must be $expected, got $(sonar_plugin_support "$plugin" "$tool")"
+          done
+
+      - name: Check the unsupported tool-version error
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          WORK="$RUNNER_TEMP/tool-version"
+          mkdir -p "$WORK"
+          for v in 0.11.0 0.12.0; do
+            ! GITHUB_OUTPUT=/dev/null TOOL_VERSION="$v" CATEGORY="tool-$v" bash scripts/validate.sh > "$WORK/$v.log" \
+              || fail "tool-version $v must be rejected"
+            grep -q "tool-version is $v, which is not supported" "$WORK/$v.log" || fail "No error for tool-version $v: $(cat "$WORK/$v.log")"
+          done
+          for v in 0.11.1 0.13.0; do
+            GITHUB_OUTPUT=/dev/null TOOL_VERSION="$v" CATEGORY="tool-$v" bash scripts/validate.sh > "$WORK/$v.log" \
+              || fail "tool-version $v must be accepted: $(cat "$WORK/$v.log")"
+          done
+
+      - name: Check the suppressions input and the default branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          WORK="$RUNNER_TEMP/suppression-input"
+          mkdir -p "$WORK"
+          echo '{"repository": {"full_name": "owner/repo", "default_branch": "main"}}' > "$WORK/event.json"
+          # Usage: run NAME SUPPRESSIONS GITHUB_REF
+          run() {
+            : > "$WORK/$1.txt"
+            GITHUB_EVENT_NAME=push GITHUB_EVENT_PATH="$WORK/event.json" GITHUB_REF="$3" GITHUB_OUTPUT="$WORK/$1.txt" \
+              SUPPRESSIONS="$2" CATEGORY="$1" bash scripts/validate.sh > "$WORK/$1.log"
+          }
+          for value in '' true false; do
+            run "value-$value" "$value" refs/heads/main || fail "suppressions '$value' must be accepted"
+          done
+          ! run invalid maybe refs/heads/main || fail "suppressions 'maybe' must be rejected"
+          grep -q "suppressions must be 'true' or 'false'" "$WORK/invalid.log" || fail "No error for suppressions 'maybe'"
+          grep -qx default-branch=true "$WORK/value-.txt" || fail "refs/heads/main is the default branch"
+          run feature '' refs/heads/feature || fail "validate.sh failed on a feature branch"
+          grep -qx default-branch=false "$WORK/feature.txt" || fail "refs/heads/feature is not the default branch"
+
+      # bal scan leaves out the test sources and applies the suppressions itself, and its gate is
+      # turned off, since report.sh applies the action's gate.
+      - name: Check the arguments of bal scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          WORK="$RUNNER_TEMP/scan-arguments"
+          mkdir -p "$WORK/bin" "$WORK/reports" "$WORK/logs"
+          # A fake bal that records its arguments, one per line, and writes an empty SARIF report.
+          cat > "$WORK/bin/bal" << 'EOF'
+          #!/usr/bin/env bash
+          printf '%s\n' "$@" >> "$ARGS_FILE"
+          mkdir -p target/report
+          echo '{"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "Ballerina Scan Tool"}}, "results": []}]}' > target/report/scan_results.sarif
+          EOF
+          chmod +x "$WORK/bin/bal"
+          # test/restore/sonarqube-failure has a sonarqube [[platform]] entry, which the SARIF scan leaves as it is.
+          jq -n '[{path: "test/restore/sonarqube-failure", kind: "package", members: [],
+            "scan-config": [{path: "test/restore/sonarqube-failure", table: false, config: "", url: "",
+              "scan-toml": "test/restore/sonarqube-failure/Scan.toml"}]}]' > "$WORK/units.json"
+          BEFORE="$(sha256sum test/restore/sonarqube-failure/Scan.toml)"
+          # Usage: scan NAME EXCLUDE_TESTS SUPPRESSIONS
+          scan() {
+            : > "$WORK/$1.args"
+            PATH="$WORK/bin:$PATH" ARGS_FILE="$WORK/$1.args" SCAN_WORK_DIR="$WORK" GITHUB_OUTPUT=/dev/null \
+              SCAN_TOOL_VERSION=0.13.0 EXCLUDE_TESTS="$2" SUPPRESSIONS="$3" CATEGORY="$1" bash scripts/scan.sh > "$WORK/$1.log" \
+              || fail "$1: scan.sh failed: $(cat "$WORK/$1.log")"
+            ! grep -q '^::warning' "$WORK/$1.log" || fail "$1: unexpected warning: $(grep '^::warning' "$WORK/$1.log")"
+            grep -qx -- --format=sarif "$WORK/$1.args" || fail "$1: did not pass --format=sarif"
+            grep -qx -- --fail-on-severity=NONE "$WORK/$1.args" || fail "$1: did not turn the gate of bal scan off"
+          }
+          args() { paste -sd ' ' "$WORK/$1.args"; }
+
+          scan defaults '' ''
+          grep -qx -- --exclude-tests=true "$WORK/defaults.args" || fail "defaults: expected --exclude-tests=true, got $(args defaults)"
+          ! grep -q -- --ignore-suppressions "$WORK/defaults.args" || fail "defaults: passed --ignore-suppressions"
+          scan with-tests false true
+          grep -qx -- --exclude-tests=false "$WORK/with-tests.args" || fail "with-tests: expected --exclude-tests=false, got $(args with-tests)"
+          scan ignored true false
+          grep -qx -- --ignore-suppressions "$WORK/ignored.args" || fail "ignored: did not pass --ignore-suppressions"
+
+          [ "$(sha256sum test/restore/sonarqube-failure/Scan.toml)" = "$BEFORE" ] || fail "The SARIF scan must leave Scan.toml as it is"
+          [ -z "$(git status --porcelain -- test)" ] || fail "The scans left changes in test: $(git status --porcelain -- test)"
 
   # test/toml holds Scan.toml files with comments, inline tables, indented and spaced headers,
-  # tabs and sub-tables, and two forms the action must reject before scanning.
+  # tabs and sub-tables, and two forms of the sonarqube entry the action must reject before scanning.
   toml-editing:
     name: Scan.toml editing
     runs-on: ubuntu-latest
@@ -89,14 +300,12 @@ jobs:
         run: |
           set -euo pipefail
           source scripts/lib.sh
-          diff -u test/toml/expected/mixed.all.toml <(drop_platforms all < test/toml/mixed.toml)
-          diff -u test/toml/expected/mixed.sonarqube.toml <(drop_platforms sonarqube < test/toml/mixed.toml)
-          # The edited files must still be valid TOML, with the right entries left.
-          [ "$(drop_platforms all < test/toml/mixed.toml | yq -p toml -o json '.platform // [] | length')" = 0 ]
-          [ "$(drop_platforms sonarqube < test/toml/mixed.toml | yq -p toml -o json -I0 '[.platform[].name]')" = '["other"]' ]
-          [ -z "$(platform_form_problem test/toml/mixed.toml mixed)" ]
-          platform_form_problem test/toml/inline-array.toml inline | grep -q 'such as an array of inline tables'
-          platform_form_problem test/toml/multiline-string.toml multiline | grep -q 'without breaking the file'
+          diff -u test/toml/expected/mixed.sonarqube.toml <(drop_sonarqube_platform < test/toml/mixed.toml)
+          # The edited file must still be valid TOML, with the other entry left.
+          [ "$(drop_sonarqube_platform < test/toml/mixed.toml | yq -p toml -o json -I0 '[.platform[].name]')" = '["other"]' ]
+          sonarqube_entry_replaceable test/toml/mixed.toml
+          ! sonarqube_entry_replaceable test/toml/inline-array.toml
+          ! sonarqube_entry_replaceable test/toml/multiline-string.toml
 
   # validate.sh tells restricted runs, those with a read-only GITHUB_TOKEN and no secrets, from the
   # event, the actor and the event file. Each case fakes them as GitHub sets them for that run.

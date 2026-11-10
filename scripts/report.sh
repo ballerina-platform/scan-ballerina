@@ -3,12 +3,14 @@
 # earlier step failed, so that the result output and the summary are always set.
 #
 # Inputs (environment): SCAN_WORK_DIR, CATEGORY, ANNOTATIONS, JOB_SUMMARY, FAIL_ON_SEVERITY,
-# MAX_FINDINGS, FAILED_STEP (the first step that failed, empty when none did), UNIT_COUNT,
-# PACKAGES_SCANNED, HIGH, MEDIUM, LOW, TOTAL, SARIF_ID, ARTIFACT_NAME, ARTIFACT_ID, ARTIFACT_URL,
-# GCS_SKIPPED, SONARQUBE_SKIPPED.
+# FAIL_ON_COUNT, FAILED_STEP (the first step that failed, empty when none did), UNIT_COUNT,
+# PACKAGES_SCANNED, HIGH, MEDIUM, LOW, TOTAL, SUPPRESSED, SARIF_ID, ARTIFACT_NAME, ARTIFACT_ID,
+# ARTIFACT_URL, GCS_SKIPPED, SONARQUBE_SKIPPED.
 # Reads: $SCAN_WORK_DIR/sonarqube-failures.txt, written by scan.sh. A package whose SonarQube scan
-# failed makes the result error and fails the step here, after the SARIF file was uploaded.
-# Outputs: result, uploads, high-count, medium-count, low-count, total-count, packages-scanned.
+# failed makes the result error and fails the step here, after the SARIF file was uploaded. Also
+# reads $SCAN_WORK_DIR/alerts.json, written by dismiss-alerts.sh.
+# Outputs: result, uploads, high-count, medium-count, low-count, total-count, packages-scanned,
+# suppressed-count.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -21,13 +23,15 @@ ANNOTATION_LIMIT=10
 WORK="${SCAN_WORK_DIR:-}"
 CATEGORY="$(trim "${CATEGORY:-bal-scan}")"
 FAIL_ON="$(tr '[:upper:]' '[:lower:]' <<< "$(trim "${FAIL_ON_SEVERITY:-none}")")"
-MAX="$(trim "${MAX_FINDINGS:-0}")"
-[[ "$MAX" =~ ^[0-9]+$ ]] || MAX=0
+# As bal scan --fail-on-count: the gate fails when this many findings, or more, are at or above
+# fail-on-severity.
+COUNT_LIMIT="$(trim "${FAIL_ON_COUNT:-1}")"
+[[ "$COUNT_LIMIT" =~ ^[1-9][0-9]*$ ]] || COUNT_LIMIT=1
 # The merge step sets the counts whenever it succeeds, so missing counts mean it never finished,
 # such as when the run was cancelled or timed out, which FAILED_STEP does not catch.
 COUNTED=false
 [ -n "${HIGH:-}" ] && [ -n "${MEDIUM:-}" ] && [ -n "${LOW:-}" ] && COUNTED=true
-COUNT_OUTPUTS=("${HIGH:-}" "${MEDIUM:-}" "${LOW:-}" "${TOTAL:-}" "${PACKAGES_SCANNED:-}")
+COUNT_OUTPUTS=("${HIGH:-}" "${MEDIUM:-}" "${LOW:-}" "${TOTAL:-}" "${PACKAGES_SCANNED:-}" "${SUPPRESSED:-}")
 HIGH="${HIGH:-0}" MEDIUM="${MEDIUM:-0}" LOW="${LOW:-0}"
 
 # Uploads: one entry per platform the findings were sent to.
@@ -80,12 +84,12 @@ else
     *) SELECTED=0 ;;
   esac
   RESULT=passed
-  if [ "$FAIL_ON" != "none" ] && [ "$SELECTED" -gt "$MAX" ]; then
+  if [ "$FAIL_ON" != "none" ] && [ "$SELECTED" -ge "$COUNT_LIMIT" ]; then
     RESULT=failed
-    if [ "$MAX" -eq 0 ]; then
+    if [ "$COUNT_LIMIT" -eq 1 ]; then
       REASONS+=("Found $SELECTED finding(s) at or above $FAIL_ON severity; none are allowed.")
     else
-      REASONS+=("Found $SELECTED finding(s) at or above $FAIL_ON severity; at most $MAX are allowed.")
+      REASONS+=("Found $SELECTED finding(s) at or above $FAIL_ON severity; the gate fails at $COUNT_LIMIT.")
     fi
   fi
   if [ "${#SONAR_FAILURES[@]}" -gt 0 ]; then
@@ -98,13 +102,14 @@ set_output result "$RESULT"
 # Nothing was found to scan, so every count is 0. Otherwise the counts are passed on as the earlier
 # steps set them, which is empty when they did not finish.
 if [ "$RESULT" = skipped ]; then
-  COUNT_OUTPUTS=(0 0 0 0 0)
+  COUNT_OUTPUTS=(0 0 0 0 0 0)
 fi
 set_output high-count "${COUNT_OUTPUTS[0]}"
 set_output medium-count "${COUNT_OUTPUTS[1]}"
 set_output low-count "${COUNT_OUTPUTS[2]}"
 set_output total-count "${COUNT_OUTPUTS[3]}"
 set_output packages-scanned "${COUNT_OUTPUTS[4]}"
+set_output suppressed-count "${COUNT_OUTPUTS[5]}"
 
 # Annotations on each counted finding, up to GitHub's limit for each level. The gate's errors and
 # the warning about the limit are annotations too, so they take their slots first.
@@ -158,9 +163,13 @@ if [ "$(trim "${JOB_SUMMARY:-true}")" = "true" ] && [ -n "${GITHUB_STEP_SUMMARY:
       echo "| Low | $LOW |"
       echo
       GATE="off"
-      [ "$FAIL_ON" != "none" ] && GATE="fail on more than $MAX finding(s) at or above $FAIL_ON severity"
+      [ "$FAIL_ON" != "none" ] && GATE="fail on $COUNT_LIMIT or more finding(s) at or above $FAIL_ON severity"
       echo "Packages scanned: ${PACKAGES_SCANNED:-0}."
       echo
+      if [ "${SUPPRESSED:-0}" -gt 0 ]; then
+        echo "Suppressed findings, left out of the counts and the gate: $SUPPRESSED."
+        echo
+      fi
       echo "Gate: $GATE."
       if [ -n "$ANNOTATION_NOTE" ]; then
         echo
@@ -169,8 +178,13 @@ if [ "$(trim "${JOB_SUMMARY:-true}")" = "true" ] && [ -n "${GITHUB_STEP_SUMMARY:
     fi
     if [ "$(jq 'length' <<< "$UPLOADS")" -gt 0 ]; then
       echo
-      jq -r '
-        (if has("github-code-scanning") then "- Uploaded to GitHub code scanning." else empty end),
+      ALERTS='{}'
+      [ -z "$WORK" ] || [ ! -s "$WORK/alerts.json" ] || ALERTS="$(jq -c . "$WORK/alerts.json")"
+      jq -r --argjson alerts "$ALERTS" '
+        (if has("github-code-scanning") then "- Uploaded to GitHub code scanning."
+          + (if ($alerts.dismissed // 0) + ($alerts.reopened // 0) > 0
+             then " Dismissed \($alerts.dismissed) alert(s) of suppressed findings, and reopened \($alerts.reopened) whose suppression was removed."
+             else "" end) else empty end),
         (.sonarqube[]? | "- Reported \(.package) to SonarQube project `\(."project-key")`"
           + (if ."dashboard-url" != "" then ": [dashboard](\(."dashboard-url"))" else "" end) + "."),
         (.artifact // empty | "- Saved the SARIF file as the artifact "

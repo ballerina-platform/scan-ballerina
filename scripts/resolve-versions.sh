@@ -52,14 +52,14 @@ TOOL_CHECKED=true
 TOOL_PICKED=false
 
 # 2. Ballerina. An empty ballerina-version keeps a bal on the path that can run the given scan
-# tool, or with an empty tool-version the latest ones, so it is not limited to bal scan 0.11.x.
+# tool, or with an empty tool-version the newest supported line, so it is not limited to 0.11.x.
 if [ -n "$TOOL" ]; then
   tool_needs
   KEEP="$NEEDED"
   KEEP_REASON="$TOOL_NAME needs $NEEDED"
 else
-  KEEP="$MIN_WORKSPACE_BALLERINA_VERSION"
-  KEEP_REASON="bal scan $MIN_WORKSPACE_TOOL_VERSION and later need $KEEP"
+  KEEP="$NEWEST_LINE_BALLERINA_VERSION"
+  KEEP_REASON="bal scan $NEWEST_LINE_TOOL_VERSION and later need $KEEP"
 fi
 CURRENT=""
 if has_bal; then

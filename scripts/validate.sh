@@ -3,10 +3,11 @@
 # so it runs before packages are searched or anything but yq is downloaded.
 #
 # Inputs (environment): PLATFORMS, SCAN_PATHS, EXCLUDE_PATHS, EXCLUDE_TESTS, CATEGORY,
-# INCLUDE_RULES, EXCLUDE_RULES, FAIL_ON_SEVERITY, MAX_FINDINGS, ANNOTATIONS, JOB_SUMMARY,
-# ARTIFACTS, PLATFORM_CONFIG, BALLERINA_VERSION, TOOL_VERSION, MATRIX (the matrix as JSON).
-# Outputs: work-dir, github-code-scanning, restricted, sonarqube, sonarqube-skipped, artifacts
-# (true or false), artifact-name.
+# INCLUDE_RULES, EXCLUDE_RULES, FAIL_ON_SEVERITY, FAIL_ON_COUNT, ANNOTATIONS, JOB_SUMMARY,
+# ARTIFACTS, SUPPRESSIONS, PLATFORM_CONFIG, BALLERINA_VERSION, TOOL_VERSION, MATRIX (the matrix as
+# JSON).
+# Outputs: work-dir, github-code-scanning, restricted, default-branch, sonarqube, sonarqube-skipped,
+# artifacts (true or false), artifact-name.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -81,22 +82,23 @@ done < <(printf '%s\n%s\n' "$INCLUDE" "$EXCLUDE" | sed '/^$/d')
 FAIL_ON="$(tr '[:upper:]' '[:lower:]' <<< "$(trim "${FAIL_ON_SEVERITY:-none}")")"
 one_of "$FAIL_ON" none low medium high \
   || error "fail-on-severity must be one of none, low, medium or high, got '${FAIL_ON_SEVERITY:-}'."
-[[ "$(trim "${MAX_FINDINGS:-0}")" =~ ^[0-9]+$ ]] \
-  || error "max-findings must be a whole number of 0 or more, got '${MAX_FINDINGS:-}'."
+[[ "$(trim "${FAIL_ON_COUNT:-1}")" =~ ^[1-9][0-9]*$ ]] \
+  || error "fail-on-count must be a whole number of 1 or more, got '${FAIL_ON_COUNT:-}'."
 check_boolean exclude-tests "$(trim "${EXCLUDE_TESTS:-true}")"
 check_boolean annotations "$(trim "${ANNOTATIONS:-false}")"
 check_boolean job-summary "$(trim "${JOB_SUMMARY:-true}")"
 ARTIFACTS="$(trim "${ARTIFACTS:-false}")"
 check_boolean artifacts "$ARTIFACTS"
+check_boolean suppressions "$(trim "${SUPPRESSIONS:-true}")"
 
 # Versions below the minimums fail here. Whether the Ballerina can run the scan tool is checked
 # once, by resolve-versions.sh, which asks Ballerina Central before anything is installed.
 TOOL_VERSION="$(trim "${TOOL_VERSION:-}")"
 if [ -n "$TOOL_VERSION" ] && [ "$TOOL_VERSION" != latest ]; then
   if [[ ! "$TOOL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
-    error "tool-version must be empty, latest or a version such as $MIN_TOOL_VERSION, got '$TOOL_VERSION'."
-  elif ! version_ge "$TOOL_VERSION" "$MIN_TOOL_VERSION"; then
-    error "tool-version is $TOOL_VERSION, but the oldest supported version is $MIN_TOOL_VERSION. Set $MIN_TOOL_VERSION or later, or leave it empty to use the latest version compatible with the Ballerina version."
+    error "tool-version must be empty, latest or a version such as $NEWEST_LINE_TOOL_VERSION, got '$TOOL_VERSION'."
+  elif ! tool_supported "$TOOL_VERSION"; then
+    error "tool-version is $TOOL_VERSION, which is not supported. The action supports $SUPPORTED_TOOL_VERSIONS. Set one of these, or leave it empty to use the latest version compatible with the Ballerina version."
   fi
 fi
 BALLERINA_VERSION="$(trim "${BALLERINA_VERSION:-}")"
@@ -197,6 +199,14 @@ esac
 GCS=false
 selected github-code-scanning && GCS=true
 
+# Dismissing code scanning alerts changes them for the whole repository, so only a run on the
+# default branch does it.
+DEFAULT_BRANCH=false
+if [ -f "${GITHUB_EVENT_PATH:-}" ] && [ -n "${GITHUB_REF:-}" ] && jq -e --arg ref "$GITHUB_REF" \
+  '.repository.default_branch // "" | . != "" and "refs/heads/\(.)" == $ref' "$GITHUB_EVENT_PATH" > /dev/null 2>&1; then
+  DEFAULT_BRANCH=true
+fi
+
 SONARQUBE=false
 if selected sonarqube; then
   while IFS= read -r e; do [ -n "$e" ] && error "$e"; done < <(sonarqube_schema_errors)
@@ -253,6 +263,7 @@ mkdir -p "$WORK/reports" "$WORK/logs"
 set_output work-dir "$WORK"
 set_output github-code-scanning "$GCS"
 set_output restricted "$RESTRICTED"
+set_output default-branch "$DEFAULT_BRANCH"
 set_output sonarqube "$SONARQUBE"
 set_output sonarqube-skipped "$(selected sonarqube && [ "$SONARQUBE" = false ] && echo true || echo false)"
 set_output artifacts "$ARTIFACTS"

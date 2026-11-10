@@ -2,10 +2,8 @@
 # Step 6: runs bal scan on each package or workspace found by find-packages.sh.
 #
 # Each unit gets a SARIF pass, and with SONARQUBE=true a SonarQube pass:
-#   - SARIF pass: bal scan --format=sarif. The scan tool writes no report file while any
-#     [[platform]] entry is active, and every entry in Scan.toml is always active. So when the
-#     package's Scan.toml has [[platform]] entries, they are hidden for this pass only: the file is
-#     copied to the journal and restored as soon as the pass ends, also when it fails.
+#   - SARIF pass: bal scan --format=sarif. bal scan uses a [[platform]] entry only when
+#     --platforms names it, so Scan.toml is read as it is.
 #   - SonarQube pass: bal scan --platforms=sonarqube, with the package's resolved settings passed
 #     to SonarScanner as environment variables of that process only, and the installed
 #     SonarScanner on its path. The scan tool reads the platform plugin only from Scan.toml, so
@@ -13,14 +11,18 @@
 #     is restored, or deleted when the action created it, as soon as the pass ends. So are the
 #     results file the platform plugin writes and the .scannerwork directory of SonarScanner.
 #   - A remote Scan.toml cannot be changed, so for each pass [scan] configPath in Ballerina.toml
-#     points to a changed copy of the file find-packages.sh downloaded, and Ballerina.toml is
-#     restored as soon as the pass ends.
+#     points to the copy find-packages.sh downloaded and checked, changed for the SonarQube pass,
+#     and Ballerina.toml is restored as soon as the pass ends.
+# Both passes leave out the test sources with --exclude-tests, and turn off the gate of bal scan
+# with --fail-on-severity=NONE, since report.sh applies the action's gate. A [gate] in Scan.toml
+# would otherwise fail the scan after the report is written.
 # A failing unit does not stop the others, so every failure is reported. A failed SARIF pass
 # fails the step. A failed SonarQube pass only fails SonarQube: the SARIF file is still produced,
 # and report.sh fails the step at the end.
 #
 # Inputs (environment): SCAN_WORK_DIR, SONARQUBE, SCAN_BALLERINA_VERSION and SCAN_TOOL_VERSION
-# (the installed Ballerina and scan tool), PLATFORM_CONFIG, SCANNER_BIN, INCLUDE_RULES, EXCLUDE_RULES, CATEGORY.
+# (the installed Ballerina and scan tool), PLATFORM_CONFIG, SCANNER_BIN, SONAR_USER_HOME_DIR,
+# INCLUDE_RULES, EXCLUDE_RULES, EXCLUDE_TESTS, SUPPRESSIONS, CATEGORY.
 # Writes: $SCAN_WORK_DIR/reports/<index>.sarif per unit, in the order of units.json,
 # $SCAN_WORK_DIR/sonarqube-uploads.json and $SCAN_WORK_DIR/sonarqube-failures.txt, one line per
 # package whose SonarQube pass failed.
@@ -37,11 +39,12 @@ cd "$ROOT"
 # Catches workspaces resolve-versions.sh could not check, such as with an unresolved latest.
 check_workspace_support "${SCAN_BALLERINA_VERSION:-}" "${SCAN_TOOL_VERSION:-}" "$WORK/units.json"
 
-RULE_ARGS=()
+SCAN_ARGS=("--exclude-tests=$(exclude_tests_setting)" --fail-on-severity=NONE)
 INCLUDE="$(split_list "${INCLUDE_RULES:-}" | paste -sd, -)"
 EXCLUDE="$(split_list "${EXCLUDE_RULES:-}" | paste -sd, -)"
-[ -n "$INCLUDE" ] && RULE_ARGS+=("--include-rules=$INCLUDE")
-[ -n "$EXCLUDE" ] && RULE_ARGS+=("--exclude-rules=$EXCLUDE")
+[ -n "$INCLUDE" ] && SCAN_ARGS+=("--include-rules=$INCLUDE")
+[ -n "$EXCLUDE" ] && SCAN_ARGS+=("--exclude-rules=$EXCLUDE")
+[ "$(suppressions_setting)" = true ] || SCAN_ARGS+=(--ignore-suppressions)
 
 SONAR=""
 if [ "${SONARQUBE:-false}" = "true" ]; then
@@ -73,26 +76,18 @@ use_plugin() {
   jar="$(to_native_path "$(jq -r '."plugin-file"' <<< "$settings")")"
   tmp="$(mktemp "$WORK/Scan.toml.XXXXXX")"
   if [ -n "$file" ]; then
-    drop_platforms sonarqube < "$file" > "$tmp"
+    drop_sonarqube_platform < "$file" > "$tmp"
     echo >> "$tmp"
   fi
   printf '[[platform]]\nname = "sonarqube"\npath = "%s"\n' "$jar" >> "$tmp"
   use_scan_toml "$info" "$tmp"
 }
 
-# Hides the [[platform]] entries of a package's Scan.toml until restore_files runs. $1 is the
-# package's scan_config_info from units.json. A remote Scan.toml is always replaced with a local
-# copy, so that the scan reads the file that find-packages.sh downloaded and checked.
-hide_platforms() {
-  local info="$1" tmp
-  read_scan_config "$info"
-  [ -n "$SCAN_TOML" ] || return 0
-  if [ -z "$SCAN_URL" ]; then
-    [ -f "$SCAN_TOML" ] && grep -Eq '^[[:space:]]*\[\[[[:space:]]*platform[[:space:]]*\]\]' "$SCAN_TOML" || return 0
-  fi
-  tmp="$(mktemp "$WORK/Scan.toml.XXXXXX")"
-  drop_platforms all < "$SCAN_TOML" > "$tmp"
-  use_scan_toml "$info" "$tmp"
+# Makes a package with a remote Scan.toml read the copy find-packages.sh downloaded and checked,
+# until restore_files runs, so that the file is not downloaded again. $1 is its scan_config_info.
+use_downloaded_scan_toml() {
+  read_scan_config "$1"
+  [ -z "$SCAN_URL" ] || use_scan_toml "$1" "$SCAN_TOML"
 }
 
 # Makes a package read the Scan.toml in file $2 until restore_files runs. $1 is the package's
@@ -149,14 +144,14 @@ while IFS= read -r unit; do
   rm -f "$report" "$out"
   # The package, or each member of the workspace.
   while IFS= read -r info; do
-    hide_platforms "$info"
+    use_downloaded_scan_toml "$info"
   done < <(jq -c '."scan-config" // [] | .[]' <<< "$unit")
 
   status=0
-  run_bal_scan "$path" "$WORK/logs/scan-$idx.log" --format=sarif "${RULE_ARGS[@]+"${RULE_ARGS[@]}"}" || status=$?
+  run_bal_scan "$path" "$WORK/logs/scan-$idx.log" --format=sarif "${SCAN_ARGS[@]}" || status=$?
   restore_files
 
-  # bal scan reports some errors, such as an invalid Scan.toml, without a failing exit code.
+  # bal.bat does not always pass on the exit code of bal scan, so the report decides too.
   if [ "$status" -ne 0 ]; then
     FAILED+=("$path: bal scan exited with code $status")
   elif [ ! -f "$report" ] || ! jq -e '.runs[0]' "$report" > /dev/null 2>&1; then
@@ -197,11 +192,13 @@ while IFS= read -r unit; do
     use_plugin "$settings" "$(unit_scan_config "$unit" "$path")"
     status=0
     # Set on this process only, and credentials never appear on the command line.
+    # SONAR_USER_HOME is the folder action.yml keeps in the Actions cache.
     PATH="${SCANNER_BIN:+$SCANNER_BIN:}$PATH" \
       SONAR_HOST_URL="$(jq -r '."host-url"' <<< "$settings")" \
       SONAR_TOKEN="$(sonar_token "$path")" \
       SONAR_SCANNER_JSON_PARAMS="$params" \
-      run_bal_scan "$path" "$log" --platforms=sonarqube "${RULE_ARGS[@]+"${RULE_ARGS[@]}"}" || status=$?
+      SONAR_USER_HOME="${SONAR_USER_HOME_DIR:-${SONAR_USER_HOME:-$HOME/.sonar}}" \
+      run_bal_scan "$path" "$log" --platforms=sonarqube "${SCAN_ARGS[@]}" || status=$?
     # The platform plugin does not fail bal scan when SonarScanner fails. SonarScanner writes
     # report-task.txt, with the ID of the server's background task, only once the server has
     # accepted the analysis, so that file decides. It is read before .scannerwork is removed.

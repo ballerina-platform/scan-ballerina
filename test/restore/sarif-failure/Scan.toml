@@ -1,4 +1,5 @@
-# The action hides these entries for the SARIF scan and must restore this file byte for byte.
+# bal scan uses these entries only when --platforms names them, so the SARIF scan leaves this file
+# as it is, byte for byte.
 [[platform]]
 name = "other"
 path = "./other-platform.jar"

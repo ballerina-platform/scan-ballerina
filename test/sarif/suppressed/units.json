@@ -1,0 +1,4 @@
+[
+  {"path": "app", "kind": "package", "members": []},
+  {"path": "lib", "kind": "package", "members": []}
+]

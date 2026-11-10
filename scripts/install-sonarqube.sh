@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Step 5 (sonarqube only): downloads the platform plugin each package resolved to, and the SonarScanner
 # CLI. Both are kept in a cache shared by every run of the action in the job, so they are downloaded
-# only once.
+# only once. The SonarScanner CLI is also kept in the Actions cache across jobs and runs.
 #
 # The SonarScanner distribution for the runner's operating system bundles its own Java runtime, so
 # the job needs no Java or scanner setup step. Its checksum is verified against the one this
@@ -128,25 +128,15 @@ done < <(jq -c '.[]' "$WORK/sonarqube.json")
 printf '%s\n' "$UPDATED" > "$WORK/sonarqube.json"
 echo "::endgroup::"
 
-# SonarScanner
-case "${RUNNER_OS:-$(uname -s)}" in
-  Linux) OS=linux ;;
-  macOS | Darwin) OS=macosx ;;
-  Windows | MINGW* | MSYS* | CYGWIN*) OS=windows ;;
-  *) die "SonarQube reporting does not support the runner's operating system, ${RUNNER_OS:-$(uname -s)}." ;;
-esac
-case "${RUNNER_ARCH:-$(uname -m)}" in
-  ARM64 | arm64 | aarch64) ARCH=aarch64 ;;
-  *) ARCH=x64 ;;
-esac
-# SonarSource publishes Windows for x64 only, which ARM64 Windows runs emulated.
-[ "$OS" = windows ] && ARCH=x64
-DIST="$OS-$ARCH"
+# SonarScanner. action.yml restores the folder from the Actions cache before this step, when it
+# was saved by an earlier job, and the download is then skipped.
+DIST="$(sonar_scanner_dist)" || die "SonarQube reporting does not support the runner's operating system, ${RUNNER_OS:-$(uname -s)}."
 VERSION="$PINNED_SONAR_SCANNER_VERSION"
 EXPECTED="$(sonar_scanner_sha256 "$DIST")" || die "No SonarScanner distribution is pinned for $DIST."
-DIR="$CACHE/sonar-scanner-$VERSION-$DIST"
+DIR="$(sonar_scanner_dir "$DIST")"
 
-if [ ! -d "$DIR" ]; then
+if [ ! -x "$DIR/bin/sonar-scanner" ] && [ ! -f "$DIR/bin/sonar-scanner.bat" ]; then
+  rm -rf "$DIR"
   echo "::group::Install SonarScanner $VERSION ($DIST)"
   ZIP="$CACHE/sonar-scanner-cli-$VERSION-$DIST.zip"
   download "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-$VERSION-$DIST.zip" "$ZIP" \
