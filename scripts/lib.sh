@@ -28,7 +28,8 @@ SUPPORTED_TOOL_VERSIONS="bal scan $MIN_TOOL_VERSION or later of 0.11.x, for Ball
 tool_supported() {
   local first below _ rows row
   # Read up front: version_ge's here-strings break a here-string loop in a command substitution.
-  mapfile -t rows <<< "$SCAN_TOOL_LINES"
+  # read -a, since mapfile is missing from the bash 3.2 of macOS runners.
+  IFS=$'\n' read -r -d '' -a rows <<< "$SCAN_TOOL_LINES" || true
   for row in "${rows[@]}"; do
     [ -n "$row" ] || continue
     read -r first below _ <<< "$row"
@@ -127,8 +128,17 @@ fetch_latest_tool_version() {
     | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n1
 }
 
+# Prints the Ballerina scan tool $1 needs. Central records only the update, such as 2201.13.0, so
+# the oldest Ballerina of the scan tool's line is used when that is later.
 tool_min_ballerina() {
-  cached_version "ballerina-for-scan-tool-$1" fetch_tool_min_ballerina "$1"
+  local central known
+  central="$(cached_version "ballerina-for-scan-tool-$1" fetch_tool_min_ballerina "$1")" || return 1
+  known="$(known_tool_min_ballerina "$1")"
+  if version_ge "$known" "$central"; then
+    printf '%s' "$known"
+  else
+    printf '%s' "$central"
+  fi
 }
 fetch_tool_min_ballerina() {
   central_get "$CENTRAL_SCAN_TOOL_VERSIONS_URL/$1" \
@@ -139,7 +149,8 @@ fetch_tool_min_ballerina() {
 known_tool_min_ballerina() {
   local row needed="$MIN_BALLERINA_VERSION" rows first
   # Read up front: version_ge's here-strings break a here-string loop in a command substitution.
-  mapfile -t rows <<< "$SCAN_TOOL_LINES"
+  # read -a, since mapfile is missing from the bash 3.2 of macOS runners.
+  IFS=$'\n' read -r -d '' -a rows <<< "$SCAN_TOOL_LINES" || true
   for row in "${rows[@]}"; do
     [ -n "$row" ] || continue
     read -r first _ <<< "$row"
