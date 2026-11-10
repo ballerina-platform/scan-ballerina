@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Step 5 (sonarqube only): downloads the platform plugin each package resolved to, and the SonarScanner
 # CLI. Both are kept in a cache shared by every run of the action in the job, so they are downloaded
-# only once. The SonarScanner CLI is also kept in the Actions cache across jobs and runs.
+# only once. The SonarScanner zip is also kept in the Actions cache across jobs and runs.
 #
 # The SonarScanner distribution for the runner's operating system bundles its own Java runtime, so
-# the job needs no Java or scanner setup step. Its checksum is verified against the one this
-# release pins, and so is the checksum of a platform plugin version this release knows.
+# the job needs no Java or scanner setup step. Its zip, downloaded or restored from the Actions
+# cache, is verified against the checksum this release pins, and so is a known platform plugin version.
 #
 # The default plugin, and any plugin-version, is checked against the installed scan tool.
 #
@@ -128,27 +128,33 @@ done < <(jq -c '.[]' "$WORK/sonarqube.json")
 printf '%s\n' "$UPDATED" > "$WORK/sonarqube.json"
 echo "::endgroup::"
 
-# SonarScanner. action.yml restores the folder from the Actions cache before this step, when it
-# was saved by an earlier job, and the download is then skipped.
+# SonarScanner. action.yml restores the zip from the Actions cache before this step, when an
+# earlier job saved it, and the download is then skipped.
 DIST="$(sonar_scanner_dist)" || die "SonarQube reporting does not support the runner's operating system, ${RUNNER_OS:-$(uname -s)}."
 VERSION="$PINNED_SONAR_SCANNER_VERSION"
 EXPECTED="$(sonar_scanner_sha256 "$DIST")" || die "No SonarScanner distribution is pinned for $DIST."
 DIR="$(sonar_scanner_dir "$DIST")"
 
+# The folder is only ever extracted here, from a verified zip, so one already in place is trusted.
 if [ ! -x "$DIR/bin/sonar-scanner" ] && [ ! -f "$DIR/bin/sonar-scanner.bat" ]; then
   rm -rf "$DIR"
   echo "::group::Install SonarScanner $VERSION ($DIST)"
-  ZIP="$CACHE/sonar-scanner-cli-$VERSION-$DIST.zip"
-  download "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-$VERSION-$DIST.zip" "$ZIP" \
-    || die "Could not download SonarScanner $VERSION for $DIST."
-  ACTUAL="$(sha256_of "$ZIP")"
-  if [ "$ACTUAL" != "$EXPECTED" ]; then
+  ZIP="$(sonar_scanner_zip "$DIST")"
+  if [ -f "$ZIP" ] && [ "$(sha256_of "$ZIP")" != "$EXPECTED" ]; then
+    log_warning "The cached SonarScanner $VERSION zip for $DIST does not match its pinned SHA-256, so it is downloaded again."
     rm -f "$ZIP"
-    die "The SonarScanner $VERSION download for $DIST has the SHA-256 $ACTUAL, but $EXPECTED was expected."
+  fi
+  if [ ! -f "$ZIP" ]; then
+    download "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-$VERSION-$DIST.zip" "$ZIP" \
+      || die "Could not download SonarScanner $VERSION for $DIST."
+    ACTUAL="$(sha256_of "$ZIP")"
+    if [ "$ACTUAL" != "$EXPECTED" ]; then
+      rm -f "$ZIP"
+      die "The SonarScanner $VERSION download for $DIST has the SHA-256 $ACTUAL, but $EXPECTED was expected."
+    fi
   fi
   EXTRACT="$(mktemp -d "$CACHE/sonar-scanner-extract.XXXXXX")"
   unzip -q "$ZIP" -d "$EXTRACT"
-  rm -f "$ZIP"
   # The archive holds a single top-level directory.
   TOP="$(find "$EXTRACT" -mindepth 1 -maxdepth 1 -type d | head -n1)"
   { [ -n "$TOP" ] && [ -d "$TOP/bin" ]; } || die "The SonarScanner $VERSION archive for $DIST has no bin directory."

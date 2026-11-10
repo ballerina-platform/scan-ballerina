@@ -14,8 +14,8 @@
 # where kind is version, file, url, or default (resolved by install-sonarqube.sh). Tokens are not
 # written; scan.sh reads them from PLATFORM_CONFIG.
 # Outputs: the Actions cache of SonarScanner, which action.yml restores and saves:
-#   scanner-dir, scanner-key, scanner-present  The SonarScanner CLI folder, its cache key, and true
-#                                              when an earlier use of the action in the job installed it.
+#   scanner-zip, scanner-key, scanner-present  The SonarScanner CLI zip, its cache key, and true
+#                                              when an earlier use of the action in the job has it.
 #   sonar-user-home, sonar-cache-dir, sonar-cache-prefix, sonar-cache-present  SONAR_USER_HOME of
 #                                              SonarScanner, its cache folder of the servers'
 #                                              analyzers, the prefix of its cache keys, and true when
@@ -221,12 +221,13 @@ jq -r '.[] | "SonarQube project for \(.package): \(."project-key") on \(."host-u
 # cache, since SonarScanner downloads the analyzers the server has installed.
 DIST="$(sonar_scanner_dist)" || die "SonarQube reporting does not support the runner's operating system, ${RUNNER_OS:-$(uname -s)}."
 SCANNER_DIR="$(sonar_scanner_dir "$DIST")"
+SCANNER_ZIP="$(sonar_scanner_zip "$DIST")"
 SERVERS="$(jq -r '[.[]."host-url" | rtrimstr("/")] | unique | join("\n")' <<< "$RESOLVED" | sha256_of /dev/stdin | cut -c1-16)"
 SONAR_HOME="$(sonar_user_home "$SERVERS")"
 present() { [ -d "$1" ] && [ -n "$(ls -A "$1" 2> /dev/null)" ] && echo true || echo false; }
-set_output scanner-dir "$(to_native_path "$SCANNER_DIR")"
-set_output scanner-key "scan-ballerina-sonar-scanner-$PINNED_SONAR_SCANNER_VERSION-$DIST"
-set_output scanner-present "$(present "$SCANNER_DIR")"
+set_output scanner-zip "$(to_native_path "$SCANNER_ZIP")"
+set_output scanner-key "scan-ballerina-sonar-scanner-zip-$PINNED_SONAR_SCANNER_VERSION-$DIST"
+set_output scanner-present "$({ [ -f "$SCANNER_ZIP" ] || [ "$(present "$SCANNER_DIR")" = true ]; } && echo true || echo false)"
 set_output sonar-user-home "$(to_native_path "$SONAR_HOME")"
 set_output sonar-cache-dir "$(to_native_path "$SONAR_HOME/cache")"
 set_output sonar-cache-prefix "scan-ballerina-sonar-cache-$DIST-$SERVERS-"

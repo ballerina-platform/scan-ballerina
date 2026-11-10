@@ -10,12 +10,9 @@
 #     its sonarqube [[platform]] entry points to the resolved plugin for this pass only: the file
 #     is restored, or deleted when the action created it, as soon as the pass ends. So are the
 #     results file the platform plugin writes and the .scannerwork directory of SonarScanner.
-#   - A remote Scan.toml cannot be changed, so for each pass [scan] configPath in Ballerina.toml
-#     points to the copy find-packages.sh downloaded and checked, changed for the SonarQube pass,
-#     and Ballerina.toml is restored as soon as the pass ends.
-# Both passes leave out the test sources with --exclude-tests, and turn off the gate of bal scan
-# with --fail-on-severity=NONE, since report.sh applies the action's gate. A [gate] in Scan.toml
-# would otherwise fail the scan after the report is written.
+#   - A remote Scan.toml cannot be changed, so each pass points [scan] configPath at the local copy
+#     from find-packages.sh, and Ballerina.toml is restored as soon as the pass ends.
+# Both passes set --exclude-tests from the input, and --fail-on-severity=NONE since report.sh gates.
 # A failing unit does not stop the others, so every failure is reported. A failed SARIF pass
 # fails the step. A failed SonarQube pass only fails SonarQube: the SARIF file is still produced,
 # and report.sh fails the step at the end.
@@ -39,12 +36,12 @@ cd "$ROOT"
 # Catches workspaces resolve-versions.sh could not check, such as with an unresolved latest.
 check_workspace_support "${SCAN_BALLERINA_VERSION:-}" "${SCAN_TOOL_VERSION:-}" "$WORK/units.json"
 
-SCAN_ARGS=("--exclude-tests=$(exclude_tests_setting)" --fail-on-severity=NONE)
+SCAN_ARGS=("--exclude-tests=$(bool_setting "${EXCLUDE_TESTS:-}")" --fail-on-severity=NONE)
 INCLUDE="$(split_list "${INCLUDE_RULES:-}" | paste -sd, -)"
 EXCLUDE="$(split_list "${EXCLUDE_RULES:-}" | paste -sd, -)"
 [ -n "$INCLUDE" ] && SCAN_ARGS+=("--include-rules=$INCLUDE")
 [ -n "$EXCLUDE" ] && SCAN_ARGS+=("--exclude-rules=$EXCLUDE")
-[ "$(suppressions_setting)" = true ] || SCAN_ARGS+=(--ignore-suppressions)
+[ "$(bool_setting "${SUPPRESSIONS:-}")" = true ] || SCAN_ARGS+=(--ignore-suppressions)
 
 SONAR=""
 if [ "${SONARQUBE:-false}" = "true" ]; then

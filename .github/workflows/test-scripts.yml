@@ -227,10 +227,10 @@ jobs:
           WORK="$RUNNER_TEMP/suppression-input"
           mkdir -p "$WORK"
           echo '{"repository": {"full_name": "owner/repo", "default_branch": "main"}}' > "$WORK/event.json"
-          # Usage: run NAME SUPPRESSIONS GITHUB_REF
+          # Usage: run NAME SUPPRESSIONS GITHUB_REF [GITHUB_EVENT_NAME]
           run() {
             : > "$WORK/$1.txt"
-            GITHUB_EVENT_NAME=push GITHUB_EVENT_PATH="$WORK/event.json" GITHUB_REF="$3" GITHUB_OUTPUT="$WORK/$1.txt" \
+            GITHUB_EVENT_NAME="${4:-push}" GITHUB_EVENT_PATH="$WORK/event.json" GITHUB_REF="$3" GITHUB_OUTPUT="$WORK/$1.txt" \
               SUPPRESSIONS="$2" CATEGORY="$1" bash scripts/validate.sh > "$WORK/$1.log"
           }
           for value in '' true false; do
@@ -241,6 +241,10 @@ jobs:
           grep -qx default-branch=true "$WORK/value-.txt" || fail "refs/heads/main is the default branch"
           run feature '' refs/heads/feature || fail "validate.sh failed on a feature branch"
           grep -qx default-branch=false "$WORK/feature.txt" || fail "refs/heads/feature is not the default branch"
+          for event in pull_request_target workflow_run; do
+            run "$event" '' refs/heads/main "$event" || fail "validate.sh failed on $event"
+            grep -qx default-branch=false "$WORK/$event.txt" || fail "$event must not count as the default branch"
+          done
 
       # bal scan leaves out the test sources and applies the suppressions itself, and its gate is
       # turned off, since report.sh applies the action's gate.

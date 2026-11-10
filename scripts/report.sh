@@ -184,6 +184,12 @@ if [ "$(trim "${JOB_SUMMARY:-true}")" = "true" ] && [ -n "${GITHUB_STEP_SUMMARY:
         (if has("github-code-scanning") then "- Uploaded to GitHub code scanning."
           + (if ($alerts.dismissed // 0) + ($alerts.reopened // 0) > 0
              then " Dismissed \($alerts.dismissed) alert(s) of suppressed findings, and reopened \($alerts.reopened) whose suppression was removed."
+             else "" end)
+          + (if ($alerts."left-open" // 0) > 0
+             then " **Could not list the code scanning alerts, so the alerts of \($alerts."left-open") suppressed finding(s) stay open.** The token needs the `security-events: write` permission."
+             else "" end)
+          + (if ($alerts.failed // 0) > 0
+             then " **Could not change \($alerts.failed) code scanning alert(s) of suppressed findings.** The token needs the `security-events: write` permission."
              else "" end) else empty end),
         (.sonarqube[]? | "- Reported \(.package) to SonarQube project `\(."project-key")`"
           + (if ."dashboard-url" != "" then ": [dashboard](\(."dashboard-url"))" else "" end) + "."),

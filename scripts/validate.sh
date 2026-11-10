@@ -199,13 +199,17 @@ esac
 GCS=false
 selected github-code-scanning && GCS=true
 
-# Dismissing code scanning alerts changes them for the whole repository, so only a run on the
-# default branch does it.
+# Dismissing alerts changes them for the whole repository. pull_request_target and workflow_run also
+# have the default branch as GITHUB_REF but may scan pull request code, so they never count.
 DEFAULT_BRANCH=false
-if [ -f "${GITHUB_EVENT_PATH:-}" ] && [ -n "${GITHUB_REF:-}" ] && jq -e --arg ref "$GITHUB_REF" \
-  '.repository.default_branch // "" | . != "" and "refs/heads/\(.)" == $ref' "$GITHUB_EVENT_PATH" > /dev/null 2>&1; then
-  DEFAULT_BRANCH=true
-fi
+case "${GITHUB_EVENT_NAME:-}" in
+  push | schedule | workflow_dispatch)
+    if [ -f "${GITHUB_EVENT_PATH:-}" ] && [ -n "${GITHUB_REF:-}" ] && jq -e --arg ref "$GITHUB_REF" \
+      '.repository.default_branch // "" | . != "" and "refs/heads/\(.)" == $ref' "$GITHUB_EVENT_PATH" > /dev/null 2>&1; then
+      DEFAULT_BRANCH=true
+    fi
+    ;;
+esac
 
 SONARQUBE=false
 if selected sonarqube; then

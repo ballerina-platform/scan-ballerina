@@ -9,7 +9,8 @@
 # Inputs (environment): SCAN_WORK_DIR, GITHUB_TOKEN, GITHUB_REPOSITORY, GITHUB_REF, GITHUB_API_URL,
 # CATEGORY.
 # Reads: $SCAN_WORK_DIR/results.json and $SCAN_WORK_DIR/merged.sarif, written by merge-sarif.sh.
-# Writes: $SCAN_WORK_DIR/alerts.json, the number of alerts dismissed and reopened.
+# Writes: $SCAN_WORK_DIR/alerts.json, the number of alerts dismissed, reopened and failed to change,
+# and left-open, the suppressed findings whose alerts stay open because the alerts could not be listed.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -38,7 +39,9 @@ for state in open dismissed; do
   while :; do
     if ! body="$(gh_api -G "$API" --data-urlencode "ref=$REF" --data-urlencode "tool_name=$TOOL" \
       -d "state=$state" -d per_page=100 -d "page=$page")"; then
-      log_warning "Could not list the code scanning alerts, so the alerts of suppressed findings were not dismissed or reopened. The token needs the security-events: write permission."
+      OPEN="$(jq '[.[] | select(.suppressed)] | length' "$WORK/results.json")"
+      log_warning "Could not list the code scanning alerts, so the alerts of $OPEN suppressed finding(s) stay open and no alert was reopened. The token needs the security-events: write permission."
+      jq -n --argjson n "$OPEN" '{dismissed: 0, reopened: 0, failed: 0, "left-open": $n}' > "$WORK/alerts.json"
       exit 0
     fi
     [ "$(jq 'length' <<< "$body")" -gt 0 ] || break
@@ -68,4 +71,5 @@ done <<< "$CHANGES"
 [ "$FAILED" -eq 0 ] \
   || log_warning "Could not change $FAILED code scanning alert(s) of suppressed findings. The token needs the security-events: write permission."
 echo "Dismissed $DISMISSED code scanning alert(s) of suppressed findings, and reopened $REOPENED."
-jq -n --argjson d "$DISMISSED" --argjson r "$REOPENED" '{dismissed: $d, reopened: $r}' > "$WORK/alerts.json"
+jq -n --argjson d "$DISMISSED" --argjson r "$REOPENED" --argjson f "$FAILED" \
+  '{dismissed: $d, reopened: $r, failed: $f, "left-open": 0}' > "$WORK/alerts.json"

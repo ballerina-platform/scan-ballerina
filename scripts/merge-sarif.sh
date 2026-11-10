@@ -14,7 +14,7 @@ source "$SCRIPT_DIR/lib.sh"
 
 WORK="${SCAN_WORK_DIR:?SCAN_WORK_DIR is not set}"
 EXCLUDES="$(split_list "${EXCLUDE_PATHS:-}" | jq -R . | jq -sc .)"
-APPLY="$(suppressions_setting)"
+APPLY="$(bool_setting "${SUPPRESSIONS:-}")"
 
 mkdir -p "$WORK/normalized"
 INDEX=0

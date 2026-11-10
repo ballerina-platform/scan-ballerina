@@ -165,7 +165,7 @@ runs:
       continue-on-error: true
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ${{ steps.sonarqube.outputs.scanner-dir }}
+        path: ${{ steps.sonarqube.outputs.scanner-zip }}
         key: ${{ steps.sonarqube.outputs.scanner-key }}
 
     - name: Restore the SonarScanner cache of the servers' analyzers
@@ -229,7 +229,7 @@ runs:
       continue-on-error: true
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ${{ steps.sonarqube.outputs.scanner-dir }}
+        path: ${{ steps.sonarqube.outputs.scanner-zip }}
         key: ${{ steps.sonarqube.outputs.scanner-key }}
 
     - name: Scan packages
@@ -265,12 +265,34 @@ runs:
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/sonar-cache.sh"
 
     - name: Save the SonarScanner cache of the servers' analyzers
+      id: save-sonar-cache
       if: ${{ !cancelled() && steps.sonar-cache.outputs.save == 'true' }}
       continue-on-error: true
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.sonarqube.outputs.sonar-cache-dir }}
         key: ${{ steps.sonar-cache.outputs.key }}
+
+    # actions/cache/save only warns when a save fails, so the key is looked up before it is recorded.
+    - name: Check the saved SonarScanner cache of the servers' analyzers
+      id: check-sonar-cache
+      if: ${{ !cancelled() && steps.save-sonar-cache.outcome == 'success' }}
+      continue-on-error: true
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.sonarqube.outputs.sonar-cache-dir }}
+        key: ${{ steps.sonar-cache.outputs.key }}
+        lookup-only: true
+
+    - name: Record the saved SonarScanner cache key
+      if: ${{ !cancelled() && steps.check-sonar-cache.outputs.cache-hit == 'true' }}
+      continue-on-error: true
+      shell: bash
+      env:
+        SONAR_USER_HOME_DIR: ${{ steps.sonarqube.outputs.sonar-user-home }}
+        SAVED_KEY: ${{ steps.sonar-cache.outputs.key }}
+        CATEGORY: ${{ inputs.category }}
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/sonar-cache.sh"
 
     - name: Normalize and merge SARIF
       id: merge

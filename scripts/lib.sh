@@ -9,11 +9,8 @@
 
 set -euo pipefail
 
-# Supported scan tool lines, oldest first: the oldest supported version of each, the first version
-# after the line ("-" when it is open), and the oldest Ballerina that runs it. The Ballerina is used
-# when Ballerina Central cannot say which one a scan tool needs. Each line has --exclude-tests,
-# in-source suppressions, gate options and platforms that run only when --platforms names them.
-# 0.12.x has none of these and is not supported.
+# Supported scan tool lines, oldest first: oldest version, first version after the line ("-" when
+# open), and oldest Ballerina that runs it. 0.12.x lacks the scan options the action uses.
 SCAN_TOOL_LINES="\
 0.11.1 0.12.0 2201.12.0
 0.13.0 - 2201.13.2
@@ -45,14 +42,9 @@ tool_supported() {
 MIN_WORKSPACE_BALLERINA_VERSION="2201.13.0"
 MIN_WORKSPACE_TOOL_VERSION="0.13.0"
 
-# Prints the suppressions input as true or false. Empty is true, the default.
-suppressions_setting() {
-  [ "$(trim "${SUPPRESSIONS:-}")" = false ] && echo false || echo true
-}
-
-# Prints the exclude-tests input as true or false. Empty is true, the default.
-exclude_tests_setting() {
-  [ "$(trim "${EXCLUDE_TESTS:-}")" = false ] && echo false || echo true
+# Prints a boolean input that defaults to true as true or false.
+bool_setting() {
+  [ "$(trim "$1")" = false ] && echo false || echo true
 }
 
 # The Central API 'bal tool pull scan' uses to pick the latest scan tool for a Ballerina version.
@@ -247,6 +239,11 @@ sonar_scanner_dist() {
 # The installed SonarScanner CLI.
 sonar_scanner_dir() {
   printf '%s/sonar-scanner-%s-%s' "$(tool_cache_dir)" "$PINNED_SONAR_SCANNER_VERSION" "$1"
+}
+
+# The SonarScanner download, which the Actions cache holds so that its checksum is verified on restore.
+sonar_scanner_zip() {
+  printf '%s/sonar-scanner-cli-%s-%s.zip' "$(tool_cache_dir)" "$PINNED_SONAR_SCANNER_VERSION" "$1"
 }
 
 # SONAR_USER_HOME of SonarScanner, one per set of SonarQube servers ($1, a hash of their URLs), so
