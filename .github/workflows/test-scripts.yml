@@ -147,9 +147,9 @@ jobs:
             "$RUNNER_TEMP/sarif-golden/golden.sarif" "$RUNNER_TEMP/sarif-suppressed/suppressed.sarif" \
             "$RUNNER_TEMP/sarif-suppressed/upload/suppressed.sarif"
 
-  # alert-changes.jq picks the code scanning alerts to dismiss and reopen, and those whose suppression
-  # was removed off the default branch. The alerts are faked as
-  # the code scanning API lists them.
+  # alert-changes.jq picks the code scanning alerts to dismiss, record, reopen and set to fixed on
+  # the default branch, and the dismissed alerts of unsuppressed findings off it. The alerts are
+  # faked as the code scanning API lists them.
   alert-changes:
     name: Alert dismissal
     runs-on: ubuntu-latest
@@ -172,7 +172,7 @@ jobs:
             {rule: "r:1", file: "a.bal", line: 4, column: 1, suppressed: false, justification: ""},
             {rule: "r:1", file: "a.bal", line: 5, column: 1, suppressed: false, justification: ""}
           ]' > "$WORK/results.json"
-          # alert(number, state, line, category, reason, comment)
+          # alert(number, state, line, category, reason, comment). Line 9 has no result.
           jq -n --arg m "$MARKER" '
             def alert($n; $state; $line; $cat; $reason; $comment):
               {number: $n, state: $state, rule: {id: "r:1"}, dismissed_reason: $reason, dismissed_comment: $comment,
@@ -183,7 +183,11 @@ jobs:
             alert(4; "open"; 4; "bal-scan/"; null; null),
             alert(5; "dismissed"; 2; "bal-scan"; "won'"'"'t fix"; "\($m): old"),
             alert(6; "dismissed"; 5; "bal-scan/"; "won'"'"'t fix"; "Dismissed by hand"),
-            alert(7; "dismissed"; 1; "bal-scan/"; "won'"'"'t fix"; "\($m).")
+            alert(7; "dismissed"; 1; "bal-scan/"; "won'"'"'t fix"; "\($m): Accepted"),
+            alert(8; "dismissed"; 3; "bal-scan/"; "false positive"; "Not reachable"),
+            alert(9; "dismissed"; 9; "bal-scan/"; "won'"'"'t fix"; "\($m): Gone"),
+            alert(10; "dismissed"; 9; "bal-scan/"; "false positive"; "Dismissed by hand"),
+            alert(11; "dismissed"; 1; "bal-scan/"; "won'"'"'t fix"; "\($m): Old reason")
           ' > "$WORK/alerts.jsonl"
           picked() {
             jq -sc -f scripts/alert-changes.jq --slurpfile results "$WORK/results.json" \
@@ -192,20 +196,25 @@ jobs:
           }
           CHANGES="$(picked change)"
           EXPECTED="$(jq -nc --arg m "$MARKER" '[
-            {number: 1, change: {state: "dismissed", dismissed_reason: "won'"'"'t fix", dismissed_comment: "\($m): Accepted"}},
-            {number: 5, change: {state: "open"}}
+            {number: 1, kind: "dismiss", patches: [{state: "dismissed", dismissed_reason: "won'"'"'t fix", dismissed_comment: "\($m): Accepted"}]},
+            {number: 5, kind: "reopen", patches: [{state: "open"}]},
+            {number: 8, kind: "record", patches: [{state: "open"}, {state: "dismissed", dismissed_reason: "false positive", dismissed_comment: "\($m)."}]},
+            {number: 9, kind: "fix", patches: [{state: "open"}]},
+            {number: 11, kind: "record", patches: [{state: "open"}, {state: "dismissed", dismissed_reason: "won'"'"'t fix", dismissed_comment: "\($m): Accepted"}]}
           ]')"
-          # 3 is another category, 4 has a suppressed and a reported result, 6 was dismissed by hand,
-          # and 7 is already dismissed.
+          # 3 is another category, 4 has a suppressed and a reported result, 6 and 10 were dismissed
+          # by hand and are not suppressed, and 7 already has this suppression's comment.
           [ "$CHANGES" = "$EXPECTED" ] || fail "Expected $EXPECTED, got $CHANGES"
-          # Off the default branch, only 5 was dismissed by the action and is now reported unsuppressed.
-          REINTRODUCED="$(picked reintroduced)"
-          [ "$REINTRODUCED" = '[{"rule":"r:1","file":"a.bal","line":2,"url":null}]' ] \
-            || fail "Expected alert 5 as reintroduced, got $REINTRODUCED"
+          # Off the default branch, the dismissed alerts whose results are reported unsuppressed.
+          UNSUPPRESSED="$(picked unsuppressed)"
+          EXPECTED='[{"number":5,"rule":"r:1","file":"a.bal","line":2,"url":null,"own":true,"reason":"won'"'"'t fix"},{"number":6,"rule":"r:1","file":"a.bal","line":5,"url":null,"own":false,"reason":"won'"'"'t fix"}]'
+          [ "$UNSUPPRESSED" = "$EXPECTED" ] || fail "Expected $EXPECTED, got $UNSUPPRESSED"
 
-  # Off the default branch, dismiss-alerts.sh warns at each finding whose suppression a pull request
-  # removed. Removing the annotation line moves the finding, so the alerts must be read on the pull
-  # request's ref, where code scanning has the new line, not on the default branch. The API is faked.
+  # Off the default branch, dismiss-alerts.sh warns at each unsuppressed finding that code scanning
+  # matches to a dismissed alert: one the action dismissed whose suppression the pull request
+  # removed, and one dismissed by anyone whose finding the default branch no longer has. Removing
+  # the annotation line moves the finding, so the alerts must be read on the pull request's ref,
+  # where code scanning has the new line, not on the default branch. The API is faked.
   removed-suppressions:
     name: Removed suppressions
     runs-on: ubuntu-latest
@@ -221,54 +230,79 @@ jobs:
           mkdir -p "$WORK/bin"
           MARKER="Suppressed in source with @scan:Suppress"
           PR_REF=refs/pull/36/merge
-          # A fake curl that records the ref of each alert listing and prints the alerts of that ref
-          # in the state asked for, from $ALERTS_DIR/<ref with / as _>.json.
+          # A fake curl. For an alert listing it records the ref and prints the alerts of that ref in
+          # the state asked for, from $ALERTS_DIR/<ref with / as _>.json. For the instances of alert N
+          # it records the ref and prints $ALERTS_DIR/instances-N.json.
           cat > "$WORK/bin/curl" << 'EOF'
           #!/usr/bin/env bash
-          ref="" state=""
+          ref="" state="" url=""
           while [ $# -gt 0 ]; do
             case "$1" in
               --data-urlencode | -d)
                 case "$2" in ref=*) ref="${2#ref=}" ;; state=*) state="${2#state=}" ;; esac
                 shift 2 ;;
+              https://*) url="$1" && shift ;;
               *) shift ;;
             esac
           done
+          if [[ "$url" == */instances ]]; then
+            n="${url%/instances}" && n="${n##*/}"
+            echo "$n $ref" >> "$INSTANCES_FILE"
+            cat "$ALERTS_DIR/instances-$n.json" 2> /dev/null || echo '[]'
+            exit 0
+          fi
           echo "$ref" >> "$REFS_FILE"
           jq -c --arg s "$state" '[.[] | select(.state == $s)]' "$ALERTS_DIR/${ref//\//_}.json" 2> /dev/null || echo '[]'
           EOF
           chmod +x "$WORK/bin/curl"
           echo '{"repository": {"default_branch": "main"}}' > "$WORK/event.json"
           echo '{"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "Ballerina Scan Tool"}}, "results": []}]}' > "$WORK/merged.sarif"
-          # alert(number, line, comment): a dismissed ballerina/jwt:5 alert in auth.bal.
-          ALERT_DEF='def alert($n; $line; $comment):
-            {number: $n, state: "dismissed", rule: {id: "ballerina/jwt:5"}, dismissed_reason: "won'"'"'t fix",
+          # alert(number, line, reason, comment): a dismissed ballerina/jwt:5 alert in auth.bal.
+          ALERT_DEF='def alert($n; $line; $reason; $comment):
+            {number: $n, state: "dismissed", rule: {id: "ballerina/jwt:5"}, dismissed_reason: $reason,
              dismissed_comment: $comment, html_url: "https://example.test/alerts/\($n)",
              most_recent_instance: {category: "bal-scan/", location: {path: "auth.bal", start_line: $line, start_column: 5}}};'
-          # Usage: check NAME PR_LINE: the alerts dismissed on main sit at lines 12 (by the action) and
-          # 20 (by hand), and on the pull request at PR_LINE and 20, where its unsuppressed findings are.
-          # Only the alert the action dismissed may be warned about, once, at PR_LINE.
+          # Usage: check NAME PR_LINE. On the pull request, its unsuppressed findings sit at PR_LINE,
+          # 20, 30 and 40, matching dismissed alerts:
+          #   43 at PR_LINE, dismissed by the action, on main: warned as unsuppressed.
+          #   44 at 20, dismissed by hand, on main: a decision about the finding, not warned.
+          #   45 at 30, dismissed by hand, never on main: warned as reintroduced.
+          #   46 at 40, dismissed by the action, fixed on main: warned as reintroduced.
           check() {
             local dir="$WORK/$1" out
             mkdir -p "$dir/alerts"
             : > "$dir/refs.txt"
-            jq -n --argjson line "$2" '[
-              {rule: "ballerina/jwt:5", file: "auth.bal", line: $line, column: 5, suppressed: false, justification: ""},
-              {rule: "ballerina/jwt:5", file: "auth.bal", line: 20, column: 5, suppressed: false, justification: ""}
-            ]' > "$dir/results.json"
+            : > "$dir/instances.txt"
+            jq -n --argjson line "$2" '[$line, 20, 30, 40][]
+              | {rule: "ballerina/jwt:5", file: "auth.bal", line: ., column: 5, suppressed: false, justification: ""}' \
+              | jq -s . > "$dir/results.json"
             cp "$WORK/merged.sarif" "$dir/"
-            jq -n --arg m "$MARKER" "$ALERT_DEF"' [alert(43; 12; "\($m): Accepted"), alert(44; 20; "Dismissed by hand")]' \
+            jq -n --arg m "$MARKER" "$ALERT_DEF"' [alert(43; 12; "won'"'"'t fix"; "\($m): Accepted"),
+              alert(44; 20; "false positive"; "Dismissed by hand"), alert(46; 40; "won'"'"'t fix"; "\($m).")]' \
               > "$dir/alerts/refs_heads_main.json"
-            jq -n --arg m "$MARKER" --argjson line "$2" "$ALERT_DEF"' [alert(43; $line; "\($m): Accepted"), alert(44; 20; "Dismissed by hand")]' \
+            jq -n --arg m "$MARKER" --argjson line "$2" "$ALERT_DEF"' [alert(43; $line; "won'"'"'t fix"; "\($m): Accepted"),
+              alert(44; 20; "false positive"; "Dismissed by hand"), alert(45; 30; "used in tests"; "Dismissed by hand"),
+              alert(46; 40; "won'"'"'t fix"; "\($m).")]' \
               > "$dir/alerts/${PR_REF//\//_}.json"
-            PATH="$WORK/bin:$PATH" ALERTS_DIR="$dir/alerts" REFS_FILE="$dir/refs.txt" SCAN_WORK_DIR="$dir" \
-              GITHUB_TOKEN=fake GITHUB_REPOSITORY=owner/repo GITHUB_REF="$PR_REF" GITHUB_EVENT_PATH="$WORK/event.json" \
-              DEFAULT_BRANCH=false SARIF_ID= CATEGORY=bal-scan bash scripts/dismiss-alerts.sh > "$dir/log.txt"
+            echo '[{"ref": "refs/heads/main", "state": "open"}]' > "$dir/alerts/instances-43.json"
+            echo '[{"ref": "refs/heads/main", "state": "open"}]' > "$dir/alerts/instances-44.json"
+            echo '[{"ref": "refs/heads/main", "state": "fixed"}]' > "$dir/alerts/instances-46.json"
+            PATH="$WORK/bin:$PATH" ALERTS_DIR="$dir/alerts" REFS_FILE="$dir/refs.txt" INSTANCES_FILE="$dir/instances.txt" \
+              SCAN_WORK_DIR="$dir" GITHUB_TOKEN=fake GITHUB_REPOSITORY=owner/repo GITHUB_REF="$PR_REF" \
+              GITHUB_EVENT_PATH="$WORK/event.json" DEFAULT_BRANCH=false SARIF_ID= CATEGORY=bal-scan \
+              bash scripts/dismiss-alerts.sh > "$dir/log.txt"
             out="$(grep '^::warning' "$dir/log.txt" || true)"
-            [ "$(grep -c . <<< "$out")" -eq 1 ] || fail "$1: expected one warning, got: $out"
-            [[ "$out" == "::warning file=auth.bal,line=$2,"*"/alerts/43" ]] || fail "$1: expected a warning for alert 43 at line $2, got: $out"
+            [ "$(grep -c . <<< "$out")" -eq 3 ] || fail "$1: expected three warnings, got: $out"
+            grep -q "^::warning file=auth.bal,line=$2,.*no longer suppressed.*/alerts/43$" <<< "$out" \
+              || fail "$1: expected an unsuppressed warning for alert 43 at line $2, got: $out"
+            grep -q "^::warning file=auth.bal,line=30,.*dismissed by hand as used in tests.*/alerts/45$" <<< "$out" \
+              || fail "$1: expected a reintroduced warning for alert 45, got: $out"
+            grep -q "^::warning file=auth.bal,line=40,.*while it was suppressed.*/alerts/46$" <<< "$out" \
+              || fail "$1: expected a reintroduced warning for alert 46, got: $out"
             [ "$(sort -u "$dir/refs.txt")" = "$PR_REF" ] || fail "$1: expected the alerts of $PR_REF only, listed $(sort -u "$dir/refs.txt" | paste -sd ' ')"
-            [ "$(jq -c . "$dir/alerts.json")" = '{"reintroduced":1,"branch":"main"}' ] \
+            [ "$(cut -d' ' -f2 "$dir/instances.txt" | sort -u)" = refs/heads/main ] \
+              || fail "$1: expected the instances on main only, read $(cat "$dir/instances.txt")"
+            [ "$(jq -c . "$dir/alerts.json")" = '{"unsuppressed":1,"reintroduced":2,"branch":"main"}' ] \
               || fail "$1: unexpected alerts.json $(cat "$dir/alerts.json")"
           }
 
@@ -277,6 +311,41 @@ jobs:
           # The finding kept its line, such as when its rule was taken out of an annotation that still
           # suppresses other rules.
           check unshifted 12
+
+      # Runs for pull requests from forks and Dependabot cannot read the alerts, so
+      # removed-suppressions.sh reads the removed annotations from the diff with the base commit.
+      - name: Check the warnings of removed annotations without access to the alerts
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          WORK="$RUNNER_TEMP/removed-annotations"
+          REPO="$WORK/repo"
+          mkdir -p "$REPO"
+          git -C "$REPO" init -q
+          git -C "$REPO" config user.email test@example.test
+          git -C "$REPO" config user.name test
+          printf '%s\n' 'import ballerina/jwt;' '' '@scan:Suppress {rules: ["ballerina/jwt:5"], reason: "Accepted"}' \
+            'function a() {}' '' '@scan:Suppress {rules: ["ballerina/jwt:1"]}' 'function b() {}' > "$REPO/auth.bal"
+          git -C "$REPO" add -A && git -C "$REPO" commit -qm base
+          BASE="$(git -C "$REPO" rev-parse HEAD)"
+          # Removes the first annotation and moves the second below its function, unchanged.
+          printf '%s\n' 'import ballerina/jwt;' '' 'function a() {}' '' 'function b() {}' \
+            '@scan:Suppress {rules: ["ballerina/jwt:1"]}' > "$REPO/auth.bal"
+          git -C "$REPO" commit -qam head
+          jq -n --arg sha "$BASE" '{repository: {default_branch: "main"}, pull_request: {base: {sha: $sha}}}' > "$WORK/event.json"
+          SCAN_WORK_DIR="$WORK" GITHUB_EVENT_PATH="$WORK/event.json" GITHUB_WORKSPACE="$REPO" CATEGORY=bal-scan \
+            bash scripts/removed-suppressions.sh > "$WORK/log.txt"
+          out="$(grep '^::warning' "$WORK/log.txt" || true)"
+          [ "$(grep -c . <<< "$out")" -eq 1 ] || fail "Expected one warning, got: $out"
+          [[ "$out" == "::warning file=auth.bal,line=3,"*'removes @scan:Suppress {rules: ["ballerina/jwt:5"]'* ]] \
+            || fail "Expected a warning for the jwt:5 annotation at line 3, got: $out"
+          [ "$(jq -c . "$WORK/alerts.json")" = '{"removed":1,"branch":"main"}' ] \
+            || fail "Unexpected alerts.json $(cat "$WORK/alerts.json")"
+          # With suppressions off, removing an annotation changes nothing.
+          SCAN_WORK_DIR="$WORK" GITHUB_EVENT_PATH="$WORK/event.json" GITHUB_WORKSPACE="$REPO" SUPPRESSIONS=false \
+            bash scripts/removed-suppressions.sh > "$WORK/log.txt"
+          [ "$(jq -c . "$WORK/alerts.json")" = '{}' ] || fail "Expected no check with suppressions off"
 
   # The supported scan tools are 0.13.0 and later, and the 0.11.x backport of its features from
   # 0.11.1 for Ballerina 2201.12.x. 0.12.x has neither suppressions nor --exclude-tests.

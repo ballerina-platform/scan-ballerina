@@ -191,9 +191,12 @@ if [ "$(trim "${JOB_SUMMARY:-true}")" = "true" ] && [ -n "${GITHUB_STEP_SUMMARY:
       [ -z "$WORK" ] || [ ! -s "$WORK/alerts.json" ] || ALERTS="$(jq -c . "$WORK/alerts.json")"
       jq -r --argjson alerts "$ALERTS" '
         (if has("github-code-scanning") then "- Uploaded to GitHub code scanning."
-          + (if ($alerts.dismissed // 0) + ($alerts.reopened // 0) > 0
-             then " Dismissed \($alerts.dismissed) alert(s) of suppressed findings, and reopened \($alerts.reopened) whose suppression was removed."
-             else "" end)
+          + ([[$alerts.dismissed, "dismissed \($alerts.dismissed) alert(s) of suppressed findings"],
+              [$alerts.recorded, "recorded the suppression of \($alerts.recorded) alert(s) dismissed by hand or with an earlier justification"],
+              [$alerts.reopened, "reopened \($alerts.reopened) whose suppression was removed"],
+              [$alerts.fixed, "set \($alerts.fixed) whose finding is gone to fixed"]]
+             | map(select((.[0] // 0) > 0) | .[1]) | join(", ")
+             | if . != "" then " \(.[:1] | ascii_upcase)\(.[1:])." else "" end)
           + (if ($alerts."left-open" // 0) > 0
              then " **Could not list the code scanning alerts, so the alerts of \($alerts."left-open") suppressed finding(s) stay open.** See the log of the step that updates them."
              else "" end)
@@ -204,8 +207,14 @@ if [ "$(trim "${JOB_SUMMARY:-true}")" = "true" ] && [ -n "${GITHUB_STEP_SUMMARY:
              else "" end)
           + (if $alerts.error then " **Could not finish updating the code scanning alerts of suppressed findings.** See the log of the step that updates them."
              else "" end)
+          + (if ($alerts.unsuppressed // 0) > 0
+             then " **\($alerts.unsuppressed) finding(s) are no longer suppressed, but their alerts stay dismissed on \($alerts.branch) until this change is merged**, so code scanning does not show them here. See the warnings of the step that updates the alerts."
+             else "" end)
           + (if ($alerts.reintroduced // 0) > 0
-             then " **\($alerts.reintroduced) finding(s) are no longer suppressed, but their alerts stay dismissed on \($alerts.branch) until this change is merged**, so code scanning does not show them here. See the warnings of the step that updates the alerts."
+             then " **\($alerts.reintroduced) finding(s) are not on \($alerts.branch), but code scanning matches them to dismissed alerts**, so it does not show them as new here. See the warnings of the step that updates the alerts."
+             else "" end)
+          + (if ($alerts.removed // 0) > 0
+             then " **This pull request removes \($alerts.removed) `@scan:Suppress` annotation(s).** Code scanning matches their findings to alerts dismissed on \($alerts.branch), so it does not show them here, and this run cannot read the alerts. See the warnings of the step that checks for removed suppressions."
              else "" end) else empty end),
         (.sonarqube[]? | "- Reported \(.package) to SonarQube project `\(."project-key")`"
           + (if ."dashboard-url" != "" then ": [dashboard](\(."dashboard-url"))" else "" end) + "."),
