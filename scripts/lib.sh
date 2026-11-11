@@ -247,11 +247,15 @@ sonar_scanner_zip() {
   printf '%s/sonar-scanner-cli-%s-%s.zip' "$(tool_cache_dir)" "$PINNED_SONAR_SCANNER_VERSION" "$1"
 }
 
-# SONAR_USER_HOME of SonarScanner, one per set of SonarQube servers ($1, a hash of their URLs), so
-# that the Actions cache of one server's analyzers is never mixed with another's.
+# SONAR_USER_HOME of SonarScanner, one per SonarQube server ($1, a hash of its URL), so that the
+# Actions cache of one server's analyzers is never mixed with another's.
 sonar_user_home() {
   printf '%s/sonar-user-home/%s' "$(tool_cache_dir)" "$1"
 }
+
+# The number of SonarQube servers whose SONAR_USER_HOME action.yml keeps in the Actions cache: it
+# has restore, save and check steps for each of these slots.
+SONAR_CACHE_SLOTS=3
 
 # Sets the access time of each file in SonarScanner cache folder $1 to 1970, then creates marker
 # file $2, so that sonar-cache.sh can tell the files the scan read by an access time newer than it.

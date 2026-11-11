@@ -13,13 +13,18 @@
 # is then the downloaded copy), or none when the package has no Scan.toml. plugin is {kind, value},
 # where kind is version, file, url, or default (resolved by install-sonarqube.sh). Tokens are not
 # written; scan.sh reads them from PLATFORM_CONFIG.
+# Also writes $SCAN_WORK_DIR/sonar-caches.json, a list of {slot, url, home, prefix}: each server's
+# SONAR_USER_HOME and the prefix of its cache keys, and sonar-user-home into each item of
+# sonarqube.json.
 # Outputs: the Actions cache of SonarScanner, which action.yml restores and saves:
-#   scanner-zip, scanner-key, scanner-present  The SonarScanner CLI zip, its cache key, and true
-#                                              when an earlier use of the action in the job has it.
-#   sonar-user-home, sonar-cache-dir, sonar-cache-prefix, sonar-cache-present  SONAR_USER_HOME of
-#                                              SonarScanner, its cache folder of the servers'
+#   scanner-zip, scanner-key, scanner-present  The SonarScanner CLI zip, the prefix of its cache
+#                                              keys, and true when an earlier use of the action in
+#                                              the job has it.
+#   sonar-cache-dir-N, sonar-cache-prefix-N, sonar-cache-present-N  For the server in slot N, from
+#                                              1 to SONAR_CACHE_SLOTS: its cache folder of
 #                                              analyzers, the prefix of its cache keys, and true when
-#                                              an earlier use of the action in the job has it.
+#                                              an earlier use of the action in the job has it. Not
+#                                              set for an unused slot.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -220,32 +225,51 @@ if [ "${#ERRORS[@]}" -gt 0 ]; then
   exit 1
 fi
 
-printf '%s\n' "$RESOLVED" > "$WORK/sonarqube.json"
-jq -r '.[] | "SonarQube project for \(.package): \(."project-key") on \(."host-url")"' <<< "$RESOLVED"
-
-# The Actions cache, restored before the tools are installed. Each set of servers gets its own
-# cache, since SonarScanner downloads the analyzers the server has installed.
+# The Actions cache, restored before the tools are installed. Each server gets its own
+# SONAR_USER_HOME and cache, since SonarScanner downloads the analyzers the server has installed,
+# so jobs that share a server share its cache whatever other servers they use.
 DIST="$(sonar_scanner_dist)" || die "SonarQube reporting does not support the runner's operating system, ${RUNNER_OS:-$(uname -s)}."
 SCANNER_DIR="$(sonar_scanner_dir "$DIST")"
 SCANNER_ZIP="$(sonar_scanner_zip "$DIST")"
-SERVERS="$(jq -r '[.[]."host-url" | rtrimstr("/")] | unique | join("\n")' <<< "$RESOLVED" | sha256_of /dev/stdin | cut -c1-16)"
-SONAR_HOME="$(sonar_user_home "$SERVERS")"
 present() { [ -d "$1" ] && [ -n "$(ls -A "$1" 2> /dev/null)" ] && echo true || echo false; }
-
-# SonarScanner reads the truststore and keystore of a private CA from SONAR_USER_HOME/ssl, so the
-# user's own ssl folder is carried over to the action's SONAR_USER_HOME. It is outside the cache.
 USER_SONAR_HOME="$(to_unix_path "${SONAR_USER_HOME:-$HOME/.sonar}")"
-if [ -d "$USER_SONAR_HOME/ssl" ] && [ "$USER_SONAR_HOME" != "$SONAR_HOME" ]; then
-  mkdir -p "$SONAR_HOME"
-  rm -rf "$SONAR_HOME/ssl"
-  cp -R "$USER_SONAR_HOME/ssl" "$SONAR_HOME/ssl"
-  echo "SonarScanner uses the ssl folder of $USER_SONAR_HOME."
-fi
+
+CACHES='[]'
+while IFS= read -r url; do
+  server="$(printf '%s' "$url" | sha256_of /dev/stdin | cut -c1-16)"
+  home="$(sonar_user_home "$server")"
+  # SonarScanner reads the truststore and keystore of a private CA from SONAR_USER_HOME/ssl, so the
+  # user's own ssl folder is carried over to the action's SONAR_USER_HOME. It is outside the cache.
+  if [ -d "$USER_SONAR_HOME/ssl" ] && [ "$USER_SONAR_HOME" != "$home" ]; then
+    mkdir -p "$home"
+    rm -rf "$home/ssl"
+    cp -R "$USER_SONAR_HOME/ssl" "$home/ssl"
+  fi
+  CACHES="$(jq -c --arg url "$url" --arg home "$home" --arg prefix "scan-ballerina-sonar-cache-$DIST-$server-" \
+    '. + [{slot: (length + 1), url: $url, home: $home, prefix: $prefix}]' <<< "$CACHES")"
+done < <(jq -r '[.[]."host-url" | rtrimstr("/")] | unique | .[]' <<< "$RESOLVED")
+[ ! -d "$USER_SONAR_HOME/ssl" ] || echo "SonarScanner uses the ssl folder of $USER_SONAR_HOME."
+printf '%s\n' "$CACHES" > "$WORK/sonar-caches.json"
+
+RESOLVED="$(jq -c --argjson caches "$CACHES" \
+  'map(."host-url" as $u | . + {"sonar-user-home": ($caches[] | select(.url == ($u | rtrimstr("/"))) | .home)})' <<< "$RESOLVED")"
+printf '%s\n' "$RESOLVED" > "$WORK/sonarqube.json"
+jq -r '.[] | "SonarQube project for \(.package): \(."project-key") on \(."host-url")"' <<< "$RESOLVED"
+
 set_output scanner-zip "$(to_native_path "$SCANNER_ZIP")"
 # A prefix: saved keys add the run, so a zip saved again after failing its checksum is restored next.
 set_output scanner-key "scan-ballerina-sonar-scanner-zip-$PINNED_SONAR_SCANNER_VERSION-$DIST-$(sonar_scanner_sha256 "$DIST" | cut -c1-16)"
 set_output scanner-present "$({ [ -f "$SCANNER_ZIP" ] || [ "$(present "$SCANNER_DIR")" = true ]; } && echo true || echo false)"
-set_output sonar-user-home "$(to_native_path "$SONAR_HOME")"
-set_output sonar-cache-dir "$(to_native_path "$SONAR_HOME/cache")"
-set_output sonar-cache-prefix "scan-ballerina-sonar-cache-$DIST-$SERVERS-"
-set_output sonar-cache-present "$(present "$SONAR_HOME/cache")"
+# action.yml has a fixed set of cache steps, one per slot. A server past the last slot is scanned
+# with its own SONAR_USER_HOME, which is not kept in the Actions cache.
+COUNT="$(jq 'length' <<< "$CACHES")"
+[ "$COUNT" -le "$SONAR_CACHE_SLOTS" ] \
+  || echo "The run uses $COUNT SonarQube servers; the analyzers of the first $SONAR_CACHE_SLOTS are kept in the Actions cache."
+for ((slot = 1; slot <= SONAR_CACHE_SLOTS; slot++)); do
+  home="$(jq -r --argjson s "$slot" '.[] | select(.slot == $s) | .home' <<< "$CACHES")"
+  if [ -n "$home" ]; then
+    set_output "sonar-cache-dir-$slot" "$(to_native_path "$home/cache")"
+    set_output "sonar-cache-prefix-$slot" "$(jq -r --argjson s "$slot" '.[] | select(.slot == $s) | .prefix' <<< "$CACHES")"
+    set_output "sonar-cache-present-$slot" "$(present "$home/cache")"
+  fi
+done

@@ -130,6 +130,30 @@ jobs:
           jq -e '.runs[0].tool.driver.rules | length > 0 and all(.properties.ruleKind | IN("BUG", "VULNERABILITY", "CODE_SMELL"))' \
             "$SARIF_FILE" > /dev/null || fail "Every rule must have a ruleKind"
 
+      # The SARIF pass leaves [[platform]] entries in place, so bal scan 0.11.x must still write its
+      # report while one is active.
+      - name: Scan a package with a [[platform]] entry
+        id: platform
+        uses: ./
+        with:
+          ballerina-version: 2201.12.0
+          paths: test/oldest-ballerina-platform
+          category: oldest-platform
+
+      - name: Check the package with a [[platform]] entry
+        shell: bash
+        env:
+          RESULT: ${{ steps.platform.outputs.result }}
+          SARIF_FILE: ${{ steps.platform.outputs.sarif-file }}
+          TOTAL: ${{ steps.platform.outputs.total-count }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
+          [ -f "$SARIF_FILE" ] || fail "No SARIF file, although bal scan 0.11.x uses a [[platform]] entry only when --platforms names it"
+          [ "$TOTAL" -gt 0 ] || fail "total-count is '$TOTAL', expected the checkpanic finding"
+          [ -z "$(git status --porcelain -- test)" ] || fail "The scan left changes in test: $(git status --porcelain -- test)"
+
       # Ballerina 2201.12.0 has no workspaces, so they fail before anything is scanned.
       - name: Scan a workspace
         id: workspace

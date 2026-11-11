@@ -170,16 +170,37 @@ runs:
         key: ${{ steps.sonarqube.outputs.scanner-key }}
         restore-keys: ${{ steps.sonarqube.outputs.scanner-key }}-
 
-    - name: Restore the SonarScanner cache of the servers' analyzers
-      id: restore-sonar-cache
-      if: steps.sonarqube.outcome == 'success' && steps.sonarqube.outputs.sonar-cache-present != 'true'
+    # One cache of analyzers per SonarQube server, in up to SONAR_CACHE_SLOTS (lib.sh) slots. Saved
+    # keys end with a hash of the cached files, so each prefix restores the newest one.
+    - name: Restore the SonarScanner cache of the analyzers of server 1
+      id: restore-sonar-cache-1
+      if: steps.sonarqube.outcome == 'success' && steps.sonarqube.outputs.sonar-cache-dir-1 != '' && steps.sonarqube.outputs.sonar-cache-present-1 != 'true'
       continue-on-error: true
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ${{ steps.sonarqube.outputs.sonar-cache-dir }}
-        # Saved keys end with a hash of the cached files, so the prefix restores the newest one.
-        key: ${{ steps.sonarqube.outputs.sonar-cache-prefix }}
-        restore-keys: ${{ steps.sonarqube.outputs.sonar-cache-prefix }}
+        path: ${{ steps.sonarqube.outputs.sonar-cache-dir-1 }}
+        key: ${{ steps.sonarqube.outputs.sonar-cache-prefix-1 }}
+        restore-keys: ${{ steps.sonarqube.outputs.sonar-cache-prefix-1 }}
+
+    - name: Restore the SonarScanner cache of the analyzers of server 2
+      id: restore-sonar-cache-2
+      if: steps.sonarqube.outcome == 'success' && steps.sonarqube.outputs.sonar-cache-dir-2 != '' && steps.sonarqube.outputs.sonar-cache-present-2 != 'true'
+      continue-on-error: true
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.sonarqube.outputs.sonar-cache-dir-2 }}
+        key: ${{ steps.sonarqube.outputs.sonar-cache-prefix-2 }}
+        restore-keys: ${{ steps.sonarqube.outputs.sonar-cache-prefix-2 }}
+
+    - name: Restore the SonarScanner cache of the analyzers of server 3
+      id: restore-sonar-cache-3
+      if: steps.sonarqube.outcome == 'success' && steps.sonarqube.outputs.sonar-cache-dir-3 != '' && steps.sonarqube.outputs.sonar-cache-present-3 != 'true'
+      continue-on-error: true
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.sonarqube.outputs.sonar-cache-dir-3 }}
+        key: ${{ steps.sonarqube.outputs.sonar-cache-prefix-3 }}
+        restore-keys: ${{ steps.sonarqube.outputs.sonar-cache-prefix-3 }}
 
     # Resolves latest and empty versions. A Ballerina installed from a .deb package is removed when
     # another one is installed, so that setup-ballerina can install it.
@@ -245,7 +266,6 @@ runs:
         SCAN_BALLERINA_VERSION: ${{ steps.tool.outputs.ballerina-version }}
         SCAN_TOOL_VERSION: ${{ steps.tool.outputs.tool-version }}
         SCANNER_BIN: ${{ steps.sonarqube-tools.outputs.scanner-bin }}
-        SONAR_USER_HOME_DIR: ${{ steps.sonarqube.outputs.sonar-user-home }}
         PLATFORM_CONFIG: ${{ inputs.platform-config }}
         INCLUDE_RULES: ${{ inputs.include-rules }}
         EXCLUDE_RULES: ${{ inputs.exclude-rules }}
@@ -255,7 +275,7 @@ runs:
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/scan.sh"
 
     # Also after a failed scan: the analyzers SonarScanner downloaded are still worth keeping.
-    - name: Key the SonarScanner cache of the servers' analyzers
+    - name: Key the SonarScanner caches of the servers' analyzers
       id: sonar-cache
       if: ${{ !cancelled() && steps.sonarqube-tools.outcome == 'success' && steps.scan.outcome != 'skipped' }}
       continue-on-error: true
@@ -263,39 +283,82 @@ runs:
       env:
         SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
         SCAN_SUCCEEDED: ${{ steps.scan.outcome == 'success' }}
-        SONAR_USER_HOME_DIR: ${{ steps.sonarqube.outputs.sonar-user-home }}
-        SONAR_CACHE_PREFIX: ${{ steps.sonarqube.outputs.sonar-cache-prefix }}
-        RESTORED_KEY: ${{ steps.restore-sonar-cache.outputs.cache-matched-key }}
+        RESTORED_KEY_1: ${{ steps.restore-sonar-cache-1.outputs.cache-matched-key }}
+        RESTORED_KEY_2: ${{ steps.restore-sonar-cache-2.outputs.cache-matched-key }}
+        RESTORED_KEY_3: ${{ steps.restore-sonar-cache-3.outputs.cache-matched-key }}
         CATEGORY: ${{ inputs.category }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/sonar-cache.sh"
 
-    - name: Save the SonarScanner cache of the servers' analyzers
-      id: save-sonar-cache
-      if: ${{ !cancelled() && steps.sonar-cache.outputs.save == 'true' && steps.validate.outputs.save-cache == 'true' }}
+    - name: Save the SonarScanner cache of the analyzers of server 1
+      id: save-sonar-cache-1
+      if: ${{ !cancelled() && steps.sonar-cache.outputs.save-1 == 'true' && steps.validate.outputs.save-cache == 'true' }}
       continue-on-error: true
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ${{ steps.sonarqube.outputs.sonar-cache-dir }}
-        key: ${{ steps.sonar-cache.outputs.key }}
+        path: ${{ steps.sonarqube.outputs.sonar-cache-dir-1 }}
+        key: ${{ steps.sonar-cache.outputs.key-1 }}
 
     # actions/cache/save only warns when a save fails, so the key is looked up before it is recorded.
-    - name: Check the saved SonarScanner cache of the servers' analyzers
-      id: check-sonar-cache
-      if: ${{ !cancelled() && steps.save-sonar-cache.outcome == 'success' }}
+    - name: Check the saved SonarScanner cache of the analyzers of server 1
+      id: check-sonar-cache-1
+      if: ${{ !cancelled() && steps.save-sonar-cache-1.outcome == 'success' }}
       continue-on-error: true
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ${{ steps.sonarqube.outputs.sonar-cache-dir }}
-        key: ${{ steps.sonar-cache.outputs.key }}
+        path: ${{ steps.sonarqube.outputs.sonar-cache-dir-1 }}
+        key: ${{ steps.sonar-cache.outputs.key-1 }}
         lookup-only: true
 
-    - name: Record the saved SonarScanner cache key
-      if: ${{ !cancelled() && steps.check-sonar-cache.outputs.cache-hit == 'true' }}
+    - name: Save the SonarScanner cache of the analyzers of server 2
+      id: save-sonar-cache-2
+      if: ${{ !cancelled() && steps.sonar-cache.outputs.save-2 == 'true' && steps.validate.outputs.save-cache == 'true' }}
+      continue-on-error: true
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.sonarqube.outputs.sonar-cache-dir-2 }}
+        key: ${{ steps.sonar-cache.outputs.key-2 }}
+
+    # actions/cache/save only warns when a save fails, so the key is looked up before it is recorded.
+    - name: Check the saved SonarScanner cache of the analyzers of server 2
+      id: check-sonar-cache-2
+      if: ${{ !cancelled() && steps.save-sonar-cache-2.outcome == 'success' }}
+      continue-on-error: true
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.sonarqube.outputs.sonar-cache-dir-2 }}
+        key: ${{ steps.sonar-cache.outputs.key-2 }}
+        lookup-only: true
+
+    - name: Save the SonarScanner cache of the analyzers of server 3
+      id: save-sonar-cache-3
+      if: ${{ !cancelled() && steps.sonar-cache.outputs.save-3 == 'true' && steps.validate.outputs.save-cache == 'true' }}
+      continue-on-error: true
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.sonarqube.outputs.sonar-cache-dir-3 }}
+        key: ${{ steps.sonar-cache.outputs.key-3 }}
+
+    # actions/cache/save only warns when a save fails, so the key is looked up before it is recorded.
+    - name: Check the saved SonarScanner cache of the analyzers of server 3
+      id: check-sonar-cache-3
+      if: ${{ !cancelled() && steps.save-sonar-cache-3.outcome == 'success' }}
+      continue-on-error: true
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.sonarqube.outputs.sonar-cache-dir-3 }}
+        key: ${{ steps.sonar-cache.outputs.key-3 }}
+        lookup-only: true
+
+    - name: Record the saved SonarScanner cache keys
+      if: ${{ !cancelled() && (steps.check-sonar-cache-1.outputs.cache-hit == 'true' || steps.check-sonar-cache-2.outputs.cache-hit == 'true' || steps.check-sonar-cache-3.outputs.cache-hit == 'true') }}
       continue-on-error: true
       shell: bash
       env:
-        SONAR_USER_HOME_DIR: ${{ steps.sonarqube.outputs.sonar-user-home }}
-        SAVED_KEY: ${{ steps.sonar-cache.outputs.key }}
+        SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
+        RECORD: true
+        SAVED_KEY_1: ${{ steps.check-sonar-cache-1.outputs.cache-hit == 'true' && steps.sonar-cache.outputs.key-1 || '' }}
+        SAVED_KEY_2: ${{ steps.check-sonar-cache-2.outputs.cache-hit == 'true' && steps.sonar-cache.outputs.key-2 || '' }}
+        SAVED_KEY_3: ${{ steps.check-sonar-cache-3.outputs.cache-hit == 'true' && steps.sonar-cache.outputs.key-3 || '' }}
         CATEGORY: ${{ inputs.category }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/sonar-cache.sh"
 

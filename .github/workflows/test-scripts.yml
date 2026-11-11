@@ -404,12 +404,14 @@ jobs:
             echo c > "$HOME_DIR/cache/jre/jre.tar.gz"
             touch -d '2 days ago' "$HOME_DIR"/cache/*/*
             : > "$WORK/sonarqube-failures.txt"
-            mark_sonar_cache "$HOME_DIR/cache" "$WORK/sonar-cache-start"
+            jq -n --arg home "$HOME_DIR" '[{slot: 1, url: "https://sonar.example.com", home: $home, prefix: "test-"}]' \
+              > "$WORK/sonar-caches.json"
+            mark_sonar_cache "$HOME_DIR/cache" "$HOME_DIR/cache-start"
             sleep 1
           }
           run() {
-            GITHUB_OUTPUT=/dev/null SCAN_WORK_DIR="$WORK" SCAN_SUCCEEDED="$1" SONAR_USER_HOME_DIR="$HOME_DIR" \
-              SONAR_CACHE_PREFIX=test- RESTORED_KEY=test-old bash scripts/sonar-cache.sh
+            GITHUB_OUTPUT=/dev/null SCAN_WORK_DIR="$WORK" SCAN_SUCCEEDED="$1" RESTORED_KEY_1=test-old \
+              bash scripts/sonar-cache.sh
           }
 
           setup pruned
@@ -429,6 +431,32 @@ jobs:
           cat "$HOME_DIR/cache/used/used.jar" > /dev/null
           run false
           [ -e "$HOME_DIR/cache/old" ] || fail "Nothing must be dropped after a failed scan"
+
+      # Each server has its own SONAR_USER_HOME and cache key, so a job that shares one server with
+      # another job shares its cache, whatever other servers either uses.
+      - name: Check that each server is keyed apart
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          WORK="$RUNNER_TEMP/per-server"
+          mkdir -p "$WORK/a/cache/x" "$WORK/b/cache/y"
+          echo a > "$WORK/a/cache/x/a.jar"
+          echo b > "$WORK/b/cache/y/b.jar"
+          jq -n --arg w "$WORK" '[
+            {slot: 1, url: "https://a.example.com", home: "\($w)/a", prefix: "test-a-"},
+            {slot: 2, url: "https://b.example.com", home: "\($w)/b", prefix: "test-b-"}]' > "$WORK/sonar-caches.json"
+          : > "$WORK/out.txt"
+          GITHUB_OUTPUT="$WORK/out.txt" SCAN_WORK_DIR="$WORK" SCAN_SUCCEEDED=true RESTORED_KEY_2=test-b-old \
+            bash scripts/sonar-cache.sh
+          grep -q '^key-1=test-a-' "$WORK/out.txt" && grep -q '^key-2=test-b-' "$WORK/out.txt" \
+            || fail "Each server must get a key with its own prefix: $(cat "$WORK/out.txt")"
+          grep -qx save-1=true "$WORK/out.txt" && grep -qx save-2=true "$WORK/out.txt" \
+            || fail "Both caches changed, so both must be saved: $(cat "$WORK/out.txt")"
+          KEY_1="$(grep '^key-1=' "$WORK/out.txt" | cut -d= -f2)"
+          GITHUB_OUTPUT=/dev/null SCAN_WORK_DIR="$WORK" RECORD=true SAVED_KEY_1="$KEY_1" bash scripts/sonar-cache.sh
+          [ "$(cat "$WORK/a/cache-key")" = "$KEY_1" ] || fail "The saved key of server 1 must be recorded in its home"
+          [ ! -e "$WORK/b/cache-key" ] || fail "Server 2 was not saved, so no key must be recorded for it"
 
   # test/toml holds Scan.toml files with comments, inline tables, indented and spaced headers,
   # tabs and sub-tables, and the forms of [[platform]] entries the action must reject before scanning.

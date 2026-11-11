@@ -18,7 +18,7 @@
 # and report.sh fails the step at the end.
 #
 # Inputs (environment): SCAN_WORK_DIR, SONARQUBE, SCAN_BALLERINA_VERSION and SCAN_TOOL_VERSION
-# (the installed Ballerina and scan tool), PLATFORM_CONFIG, SCANNER_BIN, SONAR_USER_HOME_DIR,
+# (the installed Ballerina and scan tool), PLATFORM_CONFIG, SCANNER_BIN,
 # INCLUDE_RULES, EXCLUDE_RULES, EXCLUDE_TESTS, SUPPRESSIONS, CATEGORY.
 # Writes: $SCAN_WORK_DIR/reports/<index>.sarif per unit, in the order of units.json,
 # $SCAN_WORK_DIR/sonarqube-uploads.json and $SCAN_WORK_DIR/sonarqube-failures.txt, one line per
@@ -47,9 +47,13 @@ SONAR=""
 if [ "${SONARQUBE:-false}" = "true" ]; then
   SONAR="$(platform_config_json)" || die "$INVALID_PLATFORM_CONFIG"
   SONAR="$(jq -c '.sonarqube // {}' <<< "$SONAR")"
-  rm -f "$WORK/sonar-cache-start"
-  [ -z "${SONAR_USER_HOME_DIR:-}" ] \
-    || mark_sonar_cache "$(to_unix_path "$SONAR_USER_HOME_DIR")/cache" "$WORK/sonar-cache-start"
+  # Each server's SONAR_USER_HOME, so that sonar-cache.sh can tell the analyzers the scan read.
+  if [ -f "$WORK/sonar-caches.json" ]; then
+    while IFS= read -r home; do
+      rm -f "$home/cache-start"
+      mark_sonar_cache "$home/cache" "$home/cache-start"
+    done < <(jq -r '.[].home' "$WORK/sonar-caches.json")
+  fi
 fi
 
 # The token of a package, resolved as check-sonarqube.sh resolved it. Each token goes to its own
@@ -198,13 +202,13 @@ while IFS= read -r unit; do
     use_plugin "$settings" "$(unit_scan_config "$unit" "$path")"
     status=0
     # Set on this process only, and credentials never appear on the command line.
-    # SONAR_USER_HOME is the folder action.yml keeps in the Actions cache, with the user's ssl
-    # folder copied in by check-sonarqube.sh.
+    # SONAR_USER_HOME is the server's folder that action.yml keeps in the Actions cache, with the
+    # user's ssl folder copied in by check-sonarqube.sh.
     PATH="${SCANNER_BIN:+$SCANNER_BIN:}$PATH" \
       SONAR_HOST_URL="$(jq -r '."host-url"' <<< "$settings")" \
       SONAR_TOKEN="$(sonar_token "$path")" \
       SONAR_SCANNER_JSON_PARAMS="$params" \
-      SONAR_USER_HOME="${SONAR_USER_HOME_DIR:-${SONAR_USER_HOME:-$HOME/.sonar}}" \
+      SONAR_USER_HOME="$(to_native_path "$(jq -r '."sonar-user-home"' <<< "$settings")")" \
       run_bal_scan "$path" "$log" --platforms=sonarqube "${SCAN_ARGS[@]}" || status=$?
     # The platform plugin does not fail bal scan when SonarScanner fails. SonarScanner writes
     # report-task.txt, with the ID of the server's background task, only once the server has
