@@ -32,7 +32,7 @@ jobs:
           BAL="$(bal version | sed -n 's/^Ballerina \([0-9][^ ]*\).*/\1/p')"
           TOOL="$(bash .github/scripts/active-scan-tool.sh)"
           echo "Ballerina $BAL, bal scan $TOOL"
-          at_least "$BAL" 2201.13.2 || fail "Ballerina $BAL is older than 2201.13.2"
+          at_least "$BAL" 2201.13.0 || fail "Ballerina $BAL is older than 2201.13.0"
           at_least "$TOOL" 0.13.0 || fail "bal scan $TOOL is older than 0.13.0"
 
   compatible-versions:
@@ -312,7 +312,7 @@ jobs:
           at_least() { [ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]; }
           [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
           BAL="$(bal version | sed -n 's/^Ballerina \([0-9][^ ]*\).*/\1/p')"
-          at_least "$BAL" 2201.13.2 || fail "Ballerina $BAL is on the path, expected the latest Ballerina"
+          at_least "$BAL" 2201.13.0 || fail "Ballerina $BAL is on the path, expected the latest Ballerina"
           [ "$(bash .github/scripts/active-scan-tool.sh)" = 0.13.0 ] || fail "bal scan 0.13.0 is not the active tool version"
 
       # The latest Ballerina is on the path, so the version asked for must still be installed. It is
@@ -321,7 +321,7 @@ jobs:
         id: other-ballerina
         uses: ./
         with:
-          ballerina-version: 2201.13.2
+          ballerina-version: 2201.13.0
           tool-version: 0.13.0
           paths: test/projects/single
           category: other-ballerina
@@ -334,7 +334,7 @@ jobs:
           set -euo pipefail
           fail() { echo "::error::$1"; exit 1; }
           [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
-          bal version | grep -q '^Ballerina 2201\.13\.2 ' || fail "Ballerina 2201.13.2 is not the installed version"
+          bal version | grep -q '^Ballerina 2201\.13\.0 ' || fail "Ballerina 2201.13.0 is not the installed version"
 
       # The version Central picks is already pulled, but another version is active, so the pick
       # must be made active again.
@@ -391,7 +391,7 @@ jobs:
           at_least() { [ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]; }
           [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
           BAL="$(bal version | sed -n 's/^Ballerina \([0-9][^ ]*\).*/\1/p')"
-          at_least "$BAL" 2201.13.2 || fail "Ballerina $BAL is on the path, expected the latest Ballerina"
+          at_least "$BAL" 2201.13.0 || fail "Ballerina $BAL is on the path, expected the latest Ballerina"
           TOOL="$(bash .github/scripts/active-scan-tool.sh)"
           at_least "$TOOL" 0.13.0 || fail "bal scan $TOOL is active, expected 0.13.0 or later"
 

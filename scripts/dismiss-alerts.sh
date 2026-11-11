@@ -54,15 +54,25 @@ gh_api() {
     -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "$@"
 }
 
-# Waits until code scanning has processed upload $1. Fails when it is not processed in time.
+# Waits until code scanning has processed upload $1. Returns 1 when it is not processed in time,
+# and 2 when it never will be or its status cannot be read, which retrying does not change.
 wait_for_processing() {
-  local deadline=$((SECONDS + PROCESSING_TIMEOUT)) status
+  local deadline=$((SECONDS + PROCESSING_TIMEOUT)) response code status
   [ -n "$1" ] || return 0
   while :; do
-    status="$(gh_api "$REPO_API/sarifs/$1" | jq -r '.processing_status // ""')" || status=""
+    # -w prints the HTTP status after the body, also when curl fails on an HTTP error.
+    response="$(gh_api -w '\n%{http_code}' "$REPO_API/sarifs/$1")" || true
+    code="${response##*$'\n'}"
+    case "$code" in
+      401 | 403 | 404)
+        log_warning "Could not read the processing status of the upload $1 (HTTP $code), so no alert was changed. The token needs the security-events: read permission."
+        return 2
+        ;;
+    esac
+    status="$(jq -r '.processing_status // ""' <<< "${response%$'\n'*}" 2> /dev/null)" || status=""
     case "$status" in
       complete) return 0 ;;
-      failed) log_warning "Code scanning could not process the upload $1, so no alert was changed." && return 1 ;;
+      failed) log_warning "Code scanning could not process the upload $1, so no alert was changed." && return 2 ;;
     esac
     [ "$SECONDS" -lt "$deadline" ] || return 1
     sleep 5
@@ -89,7 +99,12 @@ alert_changes() {
     --argjson limit "$COMMENT_LIMIT" --arg mode "$1" "$2"
 }
 
-if ! wait_for_processing "${SARIF_ID:-}"; then
+PROCESSING=0
+wait_for_processing "${SARIF_ID:-}" || PROCESSING=$?
+if [ "$PROCESSING" -eq 2 ]; then
+  jq -n '{error: true}' > "$WORK/alerts.json"
+  exit 0
+elif [ "$PROCESSING" -ne 0 ]; then
   log_warning "Code scanning had not finished processing the upload after ${PROCESSING_TIMEOUT}s, so the alerts of suppressed findings were not updated. The next run updates them."
   jq -n '{pending: true}' > "$WORK/alerts.json"
   exit 0

@@ -224,9 +224,9 @@ jobs:
             ! tool_supported "$v" || fail "bal scan $v must not be supported"
           done
           [ "$MIN_TOOL_VERSION $MIN_BALLERINA_VERSION" = "0.11.1 2201.12.0" ] || fail "The oldest supported pair is $MIN_TOOL_VERSION and $MIN_BALLERINA_VERSION"
-          [ "$NEWEST_LINE_TOOL_VERSION $NEWEST_LINE_BALLERINA_VERSION" = "0.13.0 2201.13.2" ] \
+          [ "$NEWEST_LINE_TOOL_VERSION $NEWEST_LINE_BALLERINA_VERSION" = "0.13.0 2201.13.0" ] \
             || fail "The newest line is $NEWEST_LINE_TOOL_VERSION on $NEWEST_LINE_BALLERINA_VERSION"
-          for pair in 0.11.1:2201.12.0 0.11.5:2201.12.0 0.13.0:2201.13.2 0.14.0:2201.13.2; do
+          for pair in 0.11.1:2201.12.0 0.11.5:2201.12.0 0.13.0:2201.13.0 0.14.0:2201.13.0; do
             [ "$(known_tool_min_ballerina "${pair%%:*}")" = "${pair#*:}" ] \
               || fail "bal scan ${pair%%:*} must need Ballerina ${pair#*:}, got $(known_tool_min_ballerina "${pair%%:*}")"
           done

@@ -98,7 +98,8 @@ while IFS= read -r unit; do
 
   # The package's Scan.toml and its sonarqube [[platform]] entry. For a remote Scan.toml, that is
   # the copy find-packages.sh downloaded, and messages name its URL.
-  read_scan_config "$(unit_scan_config "$unit" "$pkg")"
+  info="$(unit_scan_config "$unit" "$pkg")"
+  read_scan_config "$info"
   scan_toml="$SCAN_TOML"
   scan_url="$SCAN_URL"
   scan_toml_name="${scan_url:-$scan_toml}"
@@ -116,6 +117,13 @@ while IFS= read -r unit; do
     # The SonarQube scan replaces this entry with one for the resolved plugin.
     if ! sonarqube_entry_replaceable "$scan_toml"; then
       error "Package '$pkg': the [[platform]] entries in '$scan_toml_name' are in a form the action cannot change. Write each entry as a [[platform]] table, not an array of inline tables, with name = \"...\" on its own line and without a multi-line string that holds a line starting with '['."
+      continue
+    fi
+  else
+    # The SonarQube scan of a workspace member without a Scan.toml starts from the workspace's.
+    ws_toml="$(jq -r '."workspace-scan-toml" // ""' <<< "$info")"
+    if [ -n "$ws_toml" ] && ! sonarqube_entry_replaceable "$ws_toml"; then
+      error "Package '$pkg': the [[platform]] entries in the workspace Scan.toml '$ws_toml', which the SonarQube scan of this member starts from, are in a form the action cannot change. Write each entry as a [[platform]] table, not an array of inline tables, with name = \"...\" on its own line and without a multi-line string that holds a line starting with '['."
       continue
     fi
   fi

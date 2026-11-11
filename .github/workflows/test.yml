@@ -96,7 +96,7 @@ jobs:
             {
               "old-tool-version": "tool-version is 0.10.0, which is not supported",
               "old-ballerina-version": "ballerina-version is 2201.11.0, but bal scan 0.11.1 and later need Ballerina 2201.12.0 or later",
-              "mismatched-versions": "ballerina-version is 2201.12.0, but bal scan 0.13.0 needs Ballerina 2201.13.2 or later",
+              "mismatched-versions": "ballerina-version is 2201.12.0, but bal scan 0.13.0 needs Ballerina 2201.13.0 or later",
               "unsupported-tool-version": "tool-version is 0.12.0, which is not supported",
               "latest-tool-version": "ballerina-version is 2201.12.0, but the latest bal scan"
             }

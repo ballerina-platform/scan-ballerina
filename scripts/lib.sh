@@ -13,7 +13,7 @@ set -euo pipefail
 # open), and oldest Ballerina that runs it. 0.12.x lacks the scan options the action uses.
 SCAN_TOOL_LINES="\
 0.11.1 0.12.0 2201.12.0
-0.13.0 - 2201.13.2
+0.13.0 - 2201.13.0
 "
 
 # The oldest supported scan tool and the oldest Ballerina that runs it, and the same for the newest line.
@@ -40,7 +40,7 @@ tool_supported() {
 
 # The first Ballerina the scan tool 0.13.0, the first supported one that scans workspaces, runs on.
 # 0.11.x loads only packages.
-MIN_WORKSPACE_BALLERINA_VERSION="2201.13.2"
+MIN_WORKSPACE_BALLERINA_VERSION="2201.13.0"
 MIN_WORKSPACE_TOOL_VERSION="0.13.0"
 
 # Prints a boolean input that defaults to true as true or false.
@@ -121,8 +121,9 @@ fetch_latest_tool_version() {
     | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n1
 }
 
-# Prints the Ballerina scan tool $1 needs. Central records only the update, such as 2201.13.0, so
-# the oldest Ballerina of the scan tool's line is used when that is later.
+# Prints the Ballerina scan tool $1 needs. Central records the patch it was built with, such as
+# 2201.13.2, but serves it to every patch of that update, so only the update counts. The oldest
+# Ballerina of the scan tool's line is used when that is later.
 tool_min_ballerina() {
   local central known
   central="$(cached_version "ballerina-for-scan-tool-$1" fetch_tool_min_ballerina "$1")" || return 1

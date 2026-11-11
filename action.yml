@@ -7,7 +7,7 @@ branding:
 
 inputs:
   ballerina-version:
-    description: 'Ballerina version to install, 2201.12.0 or later, and 2201.13.2 or later for bal scan 0.13.0 and later, or latest for the latest release. Empty uses the Ballerina already on the path if it can run the scan tool (2201.13.2 or later when tool-version is also empty), and installs the latest Ballerina otherwise. A version, or latest, is installed unless it is the one on the path. Pin a version for reproducible runs.'
+    description: 'Ballerina version to install, 2201.12.0 or later, and 2201.13.0 or later for bal scan 0.13.0 and later, or latest for the latest release. Empty uses the Ballerina already on the path if it can run the scan tool (2201.13.0 or later when tool-version is also empty), and installs the latest Ballerina otherwise. A version, or latest, is installed unless it is the one on the path. Pin a version for reproducible runs.'
     required: false
     default: ''
   tool-version:

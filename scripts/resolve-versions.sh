@@ -101,8 +101,8 @@ fi
 # 4. The pair. When Central could not say which Ballerina the scan tool needs, the oldest
 # Ballerina for its scan tool line is checked.
 if [ -n "$TOOL" ] && [[ "$BAL" =~ ^[0-9] ]] && ! version_ge "$BAL" "$NEEDED"; then
-  # Central picked a scan tool that needs a later patch than BAL, such as 0.13.0 for 2201.13.1. No
-  # supported scan tool runs on BAL then, so only a later Ballerina helps.
+  # Central picked a scan tool that needs a later Ballerina than BAL. No supported scan tool runs on
+  # BAL then, so only a later Ballerina helps.
   [ "$TOOL_PICKED" != true ] \
     || die "Ballerina Central picked bal scan $TOOL as the latest version compatible with Ballerina $BAL, but it needs Ballerina $NEEDED or later, and no scan tool the action supports runs on Ballerina $BAL. Set ballerina-version to $NEEDED or later."
   case "$WANTED_BAL" in
