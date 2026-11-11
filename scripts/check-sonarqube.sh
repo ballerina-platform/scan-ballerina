@@ -242,7 +242,8 @@ if [ -d "$USER_SONAR_HOME/ssl" ] && [ "$USER_SONAR_HOME" != "$SONAR_HOME" ]; the
   echo "SonarScanner uses the ssl folder of $USER_SONAR_HOME."
 fi
 set_output scanner-zip "$(to_native_path "$SCANNER_ZIP")"
-set_output scanner-key "scan-ballerina-sonar-scanner-zip-$PINNED_SONAR_SCANNER_VERSION-$DIST"
+# A prefix: saved keys add the run, so a zip saved again after failing its checksum is restored next.
+set_output scanner-key "scan-ballerina-sonar-scanner-zip-$PINNED_SONAR_SCANNER_VERSION-$DIST-$(sonar_scanner_sha256 "$DIST" | cut -c1-16)"
 set_output scanner-present "$({ [ -f "$SCANNER_ZIP" ] || [ "$(present "$SCANNER_DIR")" = true ]; } && echo true || echo false)"
 set_output sonar-user-home "$(to_native_path "$SONAR_HOME")"
 set_output sonar-cache-dir "$(to_native_path "$SONAR_HOME/cache")"

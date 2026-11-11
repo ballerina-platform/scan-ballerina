@@ -123,26 +123,33 @@ if [ "${DEFAULT_BRANCH:-false}" != true ]; then
 fi
 
 REF="${GITHUB_REF:?GITHUB_REF is not set}"
-for state in open dismissed; do
+# Counted as the job summary counts suppressed findings, without those of severity none.
+SUPPRESSED="$(jq '[.[] | select(.suppressed and .severity != "none")] | length' "$WORK/results.json")"
+STATES=(dismissed)
+# Open alerts are only dismissed, so they are listed only when a finding is suppressed.
+jq -e 'any(.[]; .suppressed)' "$WORK/results.json" > /dev/null && STATES=(open dismissed)
+for state in "${STATES[@]}"; do
   if ! list_alerts "$REF" "$state" >> "$ALERTS"; then
-    OPEN="$(jq '[.[] | select(.suppressed)] | length' "$WORK/results.json")"
-    log_warning "Could not list the code scanning alerts, so the alerts of $OPEN suppressed finding(s) stay open and no alert was reopened. The token needs the security-events: write permission."
-    jq -n --argjson n "$OPEN" '{dismissed: 0, reopened: 0, failed: 0, "left-open": $n}' > "$WORK/alerts.json"
+    if [ "$SUPPRESSED" -gt 0 ]; then
+      log_warning "Could not list the code scanning alerts, so the alerts of $SUPPRESSED suppressed finding(s) stay open and no alert was reopened. See the log of this step."
+    else
+      echo "Could not list the code scanning alerts, so no alert of a finding whose suppression was removed was reopened."
+    fi
+    jq -n --argjson n "$SUPPRESSED" '{dismissed: 0, reopened: 0, failed: 0, "left-open": $n}' > "$WORK/alerts.json"
     exit 0
   fi
 done
 
-CHANGES="$(alert_changes change "$ALERTS")"
+# One line per alert: number, new state and the change as JSON, which has no raw tab or newline.
+CHANGES="$(alert_changes change "$ALERTS" | jq -r '"\(.number)\t\(.change.state)\t\(.change | tojson)"')"
 
 DISMISSED=0
 REOPENED=0
 FAILED=0
-while IFS= read -r item; do
-  [ -n "$item" ] || continue
-  number="$(jq -r '.number' <<< "$item")"
-  change="$(jq -c '.change' <<< "$item")"
+while IFS=$'\t' read -r number state change; do
+  [ -n "$number" ] || continue
   if gh_api -X PATCH "$API/$number" -d "$change" > /dev/null; then
-    if [ "$(jq -r '.state' <<< "$change")" = dismissed ]; then DISMISSED=$((DISMISSED + 1)); else REOPENED=$((REOPENED + 1)); fi
+    if [ "$state" = dismissed ]; then DISMISSED=$((DISMISSED + 1)); else REOPENED=$((REOPENED + 1)); fi
   else
     FAILED=$((FAILED + 1))
   fi

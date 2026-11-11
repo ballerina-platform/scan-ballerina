@@ -30,7 +30,8 @@ tool_supported() {
   for row in "${rows[@]}"; do
     [ -n "$row" ] || continue
     read -r first below _ <<< "$row"
-    if version_ge "$1" "$first" && { [ "$below" = - ] || ! version_ge "$1" "$below"; }; then
+    # The upper bound ignores a pre-release suffix, so 0.12.0-rc1 belongs to the 0.12 line.
+    if version_ge "$1" "$first" && { [ "$below" = - ] || ! version_ge "${1%%-*}" "$below"; }; then
       return 0
     fi
   done

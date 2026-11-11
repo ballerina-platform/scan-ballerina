@@ -13,7 +13,8 @@
 # (reads the plugin from GitHub Packages), CATEGORY.
 # Writes: "plugin-file", and the resolved default plugin, into each item of
 # $SCAN_WORK_DIR/sonarqube.json.
-# Outputs: scanner-bin, the directory to put on the path of the scan process.
+# Outputs: scanner-bin, the directory to put on the path of the scan process, and
+# scanner-zip-replaced, true when the restored zip failed its checksum and was downloaded again.
 
 # shellcheck source=lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -143,6 +144,7 @@ if [ ! -x "$DIR/bin/sonar-scanner" ] && [ ! -f "$DIR/bin/sonar-scanner.bat" ]; t
   if [ -f "$ZIP" ] && [ "$(sha256_of "$ZIP")" != "$EXPECTED" ]; then
     log_warning "The cached SonarScanner $VERSION zip for $DIST does not match its pinned SHA-256, so it is downloaded again."
     rm -f "$ZIP"
+    set_output scanner-zip-replaced true
   fi
   if [ ! -f "$ZIP" ]; then
     download "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-$VERSION-$DIST.zip" "$ZIP" \

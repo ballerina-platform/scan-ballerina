@@ -70,5 +70,7 @@ if [ "$KEY" = "$HELD" ]; then
   set_output save false
 else
   echo "The SonarScanner cache changed, so it is saved as $KEY"
+  # The unzipped and temporary copies are not in the key, and SonarScanner extracts them again.
+  rm -rf "$CACHE_DIR"/_*
   set_output save true
 fi

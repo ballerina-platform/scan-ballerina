@@ -186,7 +186,7 @@ if [ "$(trim "${JOB_SUMMARY:-true}")" = "true" ] && [ -n "${GITHUB_STEP_SUMMARY:
              then " Dismissed \($alerts.dismissed) alert(s) of suppressed findings, and reopened \($alerts.reopened) whose suppression was removed."
              else "" end)
           + (if ($alerts."left-open" // 0) > 0
-             then " **Could not list the code scanning alerts, so the alerts of \($alerts."left-open") suppressed finding(s) stay open.** The token needs the `security-events: write` permission."
+             then " **Could not list the code scanning alerts, so the alerts of \($alerts."left-open") suppressed finding(s) stay open.** See the log of the step that updates them."
              else "" end)
           + (if ($alerts.failed // 0) > 0
              then " **Could not change \($alerts.failed) code scanning alert(s) of suppressed findings.** The token needs the `security-events: write` permission."

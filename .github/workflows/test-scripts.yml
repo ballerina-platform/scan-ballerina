@@ -69,6 +69,27 @@ jobs:
           [ "$(jq -c '[.[] | .severity]' "$WORK/findings.json")" = '["low","medium","high"]' ] \
             || fail "The severities must follow the levels: $(jq -c . "$WORK/findings.json")"
 
+      # A result may name its file only by artifactLocation.index. It must get the artifact's path,
+      # and exclude-paths must apply to it.
+      - name: Merge a report whose results name their file by index only
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          WORK="$RUNNER_TEMP/sarif-index"
+          mkdir -p "$WORK/reports"
+          echo '[{"path": "pkg", "kind": "package", "members": []}]' > "$WORK/units.json"
+          jq -n '{version: "2.1.0", runs: [{
+            tool: {driver: {name: "Ballerina Scan Tool", rules: [{id: "ballerina:1", defaultConfiguration: {level: "note"}}]}},
+            artifacts: [{location: {uri: "main.bal"}}, {location: {uri: "gen/skip.bal"}}],
+            results: [
+              {ruleId: "ballerina:1", message: {text: "a"}, locations: [{physicalLocation: {artifactLocation: {index: 0}, region: {startLine: 3}}}]},
+              {ruleId: "ballerina:1", message: {text: "b"}, locations: [{physicalLocation: {artifactLocation: {index: 1}, region: {startLine: 4}}}]}
+            ]}]}' > "$WORK/reports/0.sarif"
+          SCAN_WORK_DIR="$WORK" EXCLUDE_PATHS=pkg/gen CATEGORY=index GITHUB_OUTPUT=/dev/null bash scripts/merge-sarif.sh
+          FILES="$(jq -c '[.[].file]' "$WORK/findings.json")"
+          [ "$FILES" = '["pkg/main.bal"]' ] || fail "Expected the finding in pkg/main.bal only, got $FILES"
+
       # test/sarif/suppressed holds a package whose results are suppressed as accepted, with and
       # without a status, under review, or not at all (an empty array), and a package that sets no
       # suppressions.
@@ -77,14 +98,14 @@ jobs:
         run: |
           set -euo pipefail
           fail() { echo "::error::$1"; exit 1; }
-          # Usage: merge NAME SUPPRESSIONS DISMISS_ALERTS
+          # Usage: merge NAME SUPPRESSIONS DISMISS_ALERTS [GITHUB_CODE_SCANNING]
           merge() {
             local work="$RUNNER_TEMP/sarif-$1"
             mkdir -p "$work"
             cp -r test/sarif/suppressed/units.json test/sarif/suppressed/reports "$work/"
             : > "$work/output.txt"
-            SCAN_WORK_DIR="$work" EXCLUDE_PATHS= CATEGORY="$1" SUPPRESSIONS="$2" \
-              DISMISS_ALERTS="$3" GITHUB_OUTPUT="$work/output.txt" bash scripts/merge-sarif.sh
+            SCAN_WORK_DIR="$work" EXCLUDE_PATHS= CATEGORY="$1" SUPPRESSIONS="$2" DISMISS_ALERTS="$3" \
+              GITHUB_CODE_SCANNING="${4:-true}" GITHUB_OUTPUT="$work/output.txt" bash scripts/merge-sarif.sh
           }
           output() { grep "^$2=" "$RUNNER_TEMP/sarif-$1/output.txt" | cut -d= -f2-; }
 
@@ -106,6 +127,11 @@ jobs:
           merge dismissed '' true
           [ "$(output dismissed upload-file)" = "$(output dismissed sarif-file)" ] \
             || fail "On the default branch, the upload must keep the suppressed results, so that their alerts can be dismissed"
+
+          # Without github-code-scanning nothing is uploaded, so no separate file is written.
+          merge no-gcs '' false false
+          [ "$(output no-gcs upload-file)" = "$(output no-gcs sarif-file)" ] \
+            || fail "Without github-code-scanning, no upload file must be written"
 
           merge ignored false false
           COUNTS="$(output ignored total-count) $(output ignored suppressed-count)"
@@ -194,7 +220,7 @@ jobs:
           for v in 0.11.1 0.11.2 0.13.0 0.13.1 0.14.0 1.0.0; do
             tool_supported "$v" || fail "bal scan $v must be supported"
           done
-          for v in 0.10.0 0.11.0 0.11.1-alpha 0.12.0 0.12.5 0.13.0-alpha; do
+          for v in 0.10.0 0.11.0 0.11.1-alpha 0.12.0-rc1 0.12.0 0.12.5 0.13.0-alpha; do
             ! tool_supported "$v" || fail "bal scan $v must not be supported"
           done
           [ "$MIN_TOOL_VERSION $MIN_BALLERINA_VERSION" = "0.11.1 2201.12.0" ] || fail "The oldest supported pair is $MIN_TOOL_VERSION and $MIN_BALLERINA_VERSION"

@@ -17,6 +17,7 @@ permissions:
 #   test/projects/services/api              1 low
 #   test/projects/services/internal/legacy  2 low
 #   test/projects/secrets                   1 high
+#   test/projects/medium                    1 medium
 #   test/projects/workspace/billing         1 low (workspace member)
 #   test/projects/workspace/shipping        1 low (workspace member)
 # The packages in test/sonarqube each set up one SonarQube case, with a Scan.toml or a

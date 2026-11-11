@@ -166,7 +166,9 @@ runs:
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.sonarqube.outputs.scanner-zip }}
+        # Saved keys add the run to this prefix, so the prefix restores the newest one.
         key: ${{ steps.sonarqube.outputs.scanner-key }}
+        restore-keys: ${{ steps.sonarqube.outputs.scanner-key }}-
 
     - name: Restore the SonarScanner cache of the servers' analyzers
       id: restore-sonar-cache
@@ -223,14 +225,15 @@ runs:
         CATEGORY: ${{ inputs.category }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/install-sonarqube.sh"
 
-    # Saved before the scan, so that a failing scan does not keep it from being saved.
+    # Saved before the scan, so that a failing scan does not keep it from being saved. Also saved
+    # when the restored zip failed its checksum, so that the newer entry replaces the bad one.
     - name: Save SonarScanner to the Actions cache
-      if: steps.sonarqube-tools.outcome == 'success' && steps.restore-scanner.outcome == 'success' && steps.restore-scanner.outputs.cache-hit != 'true'
+      if: steps.sonarqube-tools.outcome == 'success' && steps.restore-scanner.outcome == 'success' && (steps.restore-scanner.outputs.cache-matched-key == '' || steps.sonarqube-tools.outputs.scanner-zip-replaced == 'true')
       continue-on-error: true
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.sonarqube.outputs.scanner-zip }}
-        key: ${{ steps.sonarqube.outputs.scanner-key }}
+        key: ${{ steps.sonarqube.outputs.scanner-key }}-${{ github.run_id }}-${{ github.run_attempt }}
 
     - name: Scan packages
       id: scan
@@ -304,6 +307,7 @@ runs:
         SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
         EXCLUDE_PATHS: ${{ inputs.exclude-paths }}
         SUPPRESSIONS: ${{ inputs.suppressions }}
+        GITHUB_CODE_SCANNING: ${{ steps.validate.outputs.github-code-scanning }}
         DISMISS_ALERTS: ${{ steps.validate.outputs.update-alerts == 'true' && steps.validate.outputs.default-branch == 'true' }}
         CATEGORY: ${{ inputs.category }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/merge-sarif.sh"

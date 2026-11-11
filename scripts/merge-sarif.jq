@@ -51,7 +51,7 @@ def tool_version:
 
 # bal scan 0.11.x reports the rule's title as every result's message, not one about the finding.
 def generic_messages:
-  tool_version as $v | $v != [] and $v <= [0, 12];
+  tool_version as $v | $v != [] and $v < [0, 12];
 
 # bal scan 0.11.x sets no ruleKind, but takes each rule's level from its kind.
 def kinds_from_levels:

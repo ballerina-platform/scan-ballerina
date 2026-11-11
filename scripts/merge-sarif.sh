@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Step 7: normalizes the package reports, merges them into one SARIF file and counts the findings.
 #
-# Inputs (environment): SCAN_WORK_DIR, EXCLUDE_PATHS, SUPPRESSIONS, DISMISS_ALERTS
-# (true when dismiss-alerts.sh runs after the upload), CATEGORY.
+# Inputs (environment): SCAN_WORK_DIR, EXCLUDE_PATHS, SUPPRESSIONS, GITHUB_CODE_SCANNING (true
+# when the findings are uploaded to code scanning), DISMISS_ALERTS (true when dismiss-alerts.sh
+# dismisses alerts after the upload), CATEGORY.
 # Writes: the merged SARIF file, $SCAN_WORK_DIR/results.json, every result, and
 # $SCAN_WORK_DIR/findings.json, the counted findings: those that are not suppressed.
 # Outputs: sarif-file, upload-file (the SARIF file to upload to code scanning), high-count,
@@ -75,7 +76,8 @@ SUPPRESSED="$(jq '[.[] | select(.suppressed and .severity != "none")] | length' 
 # Code scanning ignores SARIF suppressions. On the default branch dismiss-alerts.sh dismisses the
 # alerts of suppressed results after the upload; elsewhere they are left out of the upload.
 UPLOAD="$SARIF"
-if [ "${DISMISS_ALERTS:-false}" != true ] && jq -e 'any(.[]; .suppressed)' "$WORK/results.json" > /dev/null; then
+if [ "${GITHUB_CODE_SCANNING:-false}" = true ] && [ "${DISMISS_ALERTS:-false}" != true ] \
+  && jq -e 'any(.[]; .suppressed)' "$WORK/results.json" > /dev/null; then
   mkdir -p "$WORK/upload"
   UPLOAD="$WORK/upload/$(safe_category).sarif"
   jq -L "$SCRIPT_DIR" 'include "common"; .runs |= map(.results |= map(select(suppressed | not)))' "$SARIF" > "$UPLOAD"
