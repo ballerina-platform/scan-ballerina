@@ -9,7 +9,8 @@
 #   - On other branches, warns about each finding whose alert this step dismissed on the default
 #     branch but which is no longer suppressed, since code scanning matches it to that dismissed
 #     alert and shows nothing new until the change is merged.
-# It first waits until code scanning has processed the upload, so that the alerts are current.
+# Both read the alerts of the uploaded ref, GITHUB_REF, whose locations are those of the findings
+# just uploaded. It first waits until code scanning has processed the upload, so that they are current.
 #
 # Inputs (environment): SCAN_WORK_DIR, GITHUB_TOKEN, GITHUB_REPOSITORY, GITHUB_REF, GITHUB_API_URL,
 # GITHUB_EVENT_PATH, DEFAULT_BRANCH, SARIF_ID, CATEGORY.
@@ -113,13 +114,16 @@ fi
 ALERTS="$WORK/alerts-list.jsonl"
 : > "$ALERTS"
 
+REF="${GITHUB_REF:?GITHUB_REF is not set}"
+
 if [ "${DEFAULT_BRANCH:-false}" != true ]; then
   # Off the default branch: the alerts this step dismissed there whose findings are now reported
-  # without a suppression.
+  # without a suppression. The default branch's locations predate the change, which usually moves
+  # the finding by deleting the annotation line, so the alerts are listed on the uploaded ref.
   BRANCH="$(jq -r '.repository.default_branch // ""' "${GITHUB_EVENT_PATH:-/dev/null}" 2> /dev/null || true)"
   [ -n "$BRANCH" ] || exit 0
-  if ! list_alerts "refs/heads/$BRANCH" dismissed >> "$ALERTS"; then
-    echo "Could not list the code scanning alerts of $BRANCH, so removed suppressions are not checked."
+  if ! list_alerts "$REF" dismissed >> "$ALERTS"; then
+    echo "Could not list the code scanning alerts of $REF, so removed suppressions are not checked."
     exit 0
   fi
   REINTRODUCED="$(alert_changes reintroduced "$ALERTS")"
@@ -137,7 +141,6 @@ if [ "${DEFAULT_BRANCH:-false}" != true ]; then
   exit 0
 fi
 
-REF="${GITHUB_REF:?GITHUB_REF is not set}"
 # Counted as the job summary counts suppressed findings, without those of severity none.
 SUPPRESSED="$(jq '[.[] | select(.suppressed and .severity != "none")] | length' "$WORK/results.json")"
 STATES=(dismissed)

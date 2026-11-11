@@ -9,7 +9,8 @@
 #   $mode      change: prints {number, change} for each open alert of a suppressed result, to
 #              dismiss, and for each alert this step dismissed whose result is no longer suppressed,
 #              to reopen. reintroduced: prints {rule, file, line, url} for each alert this step
-#              dismissed whose result is no longer suppressed, from the alerts of the default branch.
+#              dismissed whose result is no longer suppressed, from the dismissed alerts of the
+#              scanned ref, whose locations are those of its results.
 # An alert matches a result by rule, file, line and column.
 
 def key: "\(.rule)|\(.file)|\(.line)|\(.column // 1)";
