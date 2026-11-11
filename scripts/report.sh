@@ -190,6 +190,13 @@ if [ "$(trim "${JOB_SUMMARY:-true}")" = "true" ] && [ -n "${GITHUB_STEP_SUMMARY:
              else "" end)
           + (if ($alerts.failed // 0) > 0
              then " **Could not change \($alerts.failed) code scanning alert(s) of suppressed findings.** The token needs the `security-events: write` permission."
+             else "" end)
+          + (if $alerts.pending then " **Code scanning had not finished processing the upload, so the alerts of suppressed findings were not updated.** The next run updates them."
+             else "" end)
+          + (if $alerts.error then " **Could not finish updating the code scanning alerts of suppressed findings.** See the log of the step that updates them."
+             else "" end)
+          + (if ($alerts.reintroduced // 0) > 0
+             then " **\($alerts.reintroduced) finding(s) are no longer suppressed, but their alerts stay dismissed on \($alerts.branch) until this change is merged**, so code scanning does not show them here. See the warnings of the step that updates the alerts."
              else "" end) else empty end),
         (.sonarqube[]? | "- Reported \(.package) to SonarQube project `\(."project-key")`"
           + (if ."dashboard-url" != "" then ": [dashboard](\(."dashboard-url"))" else "" end) + "."),

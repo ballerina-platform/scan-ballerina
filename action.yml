@@ -258,6 +258,8 @@ runs:
       continue-on-error: true
       shell: bash
       env:
+        SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
+        SCAN_SUCCEEDED: ${{ steps.scan.outcome == 'success' }}
         SONAR_USER_HOME_DIR: ${{ steps.sonarqube.outputs.sonar-user-home }}
         SONAR_CACHE_PREFIX: ${{ steps.sonarqube.outputs.sonar-cache-prefix }}
         RESTORED_KEY: ${{ steps.restore-sonar-cache.outputs.cache-matched-key }}
@@ -302,7 +304,7 @@ runs:
         SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
         EXCLUDE_PATHS: ${{ inputs.exclude-paths }}
         SUPPRESSIONS: ${{ inputs.suppressions }}
-        DISMISS_ALERTS: ${{ steps.validate.outputs.github-code-scanning == 'true' && steps.validate.outputs.default-branch == 'true' && steps.validate.outputs.restricted != 'true' }}
+        DISMISS_ALERTS: ${{ steps.validate.outputs.update-alerts == 'true' && steps.validate.outputs.default-branch == 'true' }}
         CATEGORY: ${{ inputs.category }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/merge-sarif.sh"
 
@@ -318,14 +320,18 @@ runs:
         category: ${{ inputs.category }}
         token: ${{ inputs.github-token }}
 
-    # upload-sarif returns once code scanning has processed the upload, so the alerts are current here.
-    - name: Dismiss the code scanning alerts of suppressed findings
+    # Dismisses the alerts of suppressed findings on the default branch, and elsewhere warns about
+    # removed suppressions. It only warns on failure, so it never fails the action.
+    - name: Update the code scanning alerts of suppressed findings
       id: dismiss
-      if: steps.upload.outcome == 'success' && steps.validate.outputs.default-branch == 'true' && steps.validate.outputs.restricted != 'true'
+      if: steps.upload.outcome == 'success' && steps.validate.outputs.update-alerts == 'true'
+      continue-on-error: true
       shell: bash
       env:
         SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
+        DEFAULT_BRANCH: ${{ steps.validate.outputs.default-branch }}
+        SARIF_ID: ${{ steps.upload.outputs.sarif-id }}
         CATEGORY: ${{ inputs.category }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/dismiss-alerts.sh"
 
@@ -363,7 +369,6 @@ runs:
             (steps.scan.outcome == 'failure' && 'scan the packages') ||
             (steps.merge.outcome == 'failure' && 'merge the SARIF reports') ||
             (steps.upload.conclusion == 'failure' && 'upload to GitHub code scanning') ||
-            (steps.dismiss.outcome == 'failure' && 'dismiss the code scanning alerts of suppressed findings') ||
             (steps.artifact.outcome == 'failure' && 'save the SARIF file as an artifact') ||
             ''
           }}

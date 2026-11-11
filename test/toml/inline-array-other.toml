@@ -1,0 +1,4 @@
+platform = [{ name = "other", path = "./other-platform-plugin.jar" }]
+
+[rule]
+exclude = ["ballerina:1"]

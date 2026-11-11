@@ -6,8 +6,9 @@
 # INCLUDE_RULES, EXCLUDE_RULES, FAIL_ON_SEVERITY, FAIL_ON_COUNT, ANNOTATIONS, JOB_SUMMARY,
 # ARTIFACTS, SUPPRESSIONS, PLATFORM_CONFIG, BALLERINA_VERSION, TOOL_VERSION, MATRIX (the matrix as
 # JSON).
-# Outputs: work-dir, github-code-scanning, restricted, default-branch, save-cache, sonarqube,
-# sonarqube-skipped, artifacts (true or false), artifact-name.
+# Outputs: work-dir, github-code-scanning, restricted, default-branch, update-alerts (true when
+# dismiss-alerts.sh runs after the upload), save-cache, sonarqube, sonarqube-skipped, artifacts
+# (true or false), artifact-name.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -200,6 +201,11 @@ esac
 GCS=false
 selected github-code-scanning && GCS=true
 
+# With suppressions off every finding looks unsuppressed, so updating the alerts would reopen
+# every alert dismissed for a suppression.
+UPDATE_ALERTS=false
+[ "$GCS" = true ] && [ "$RESTRICTED" = false ] && [ "$(bool_setting "${SUPPRESSIONS:-}")" = true ] && UPDATE_ALERTS=true
+
 # Dismissing alerts changes them for the whole repository. pull_request_target and workflow_run also
 # have the default branch as GITHUB_REF but may scan pull request code, so they never count.
 DEFAULT_BRANCH=false
@@ -284,6 +290,7 @@ set_output work-dir "$WORK"
 set_output github-code-scanning "$GCS"
 set_output restricted "$RESTRICTED"
 set_output default-branch "$DEFAULT_BRANCH"
+set_output update-alerts "$UPDATE_ALERTS"
 set_output save-cache "$SAVE_CACHE"
 set_output sonarqube "$SONARQUBE"
 set_output sonarqube-skipped "$(selected sonarqube && [ "$SONARQUBE" = false ] && echo true || echo false)"

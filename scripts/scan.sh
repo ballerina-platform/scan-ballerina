@@ -47,6 +47,9 @@ SONAR=""
 if [ "${SONARQUBE:-false}" = "true" ]; then
   SONAR="$(platform_config_json)" || die "$INVALID_PLATFORM_CONFIG"
   SONAR="$(jq -c '.sonarqube // {}' <<< "$SONAR")"
+  rm -f "$WORK/sonar-cache-start"
+  [ -z "${SONAR_USER_HOME_DIR:-}" ] \
+    || mark_sonar_cache "$(to_unix_path "$SONAR_USER_HOME_DIR")/cache" "$WORK/sonar-cache-start"
 fi
 
 # The token of a package, resolved as check-sonarqube.sh resolved it. Each token goes to its own
@@ -70,6 +73,8 @@ trap 'restore_files; exit 143' TERM
 use_plugin() {
   local settings="$1" info="$2" file tmp jar
   file="$(jq -r '."scan-toml"' <<< "$settings")"
+  # A Scan.toml written for a workspace member hides the workspace's, so it starts from a copy of it.
+  [ -n "$file" ] || file="$(jq -r '."workspace-scan-toml" // ""' <<< "$info")"
   jar="$(to_native_path "$(jq -r '."plugin-file"' <<< "$settings")")"
   tmp="$(mktemp "$WORK/Scan.toml.XXXXXX")"
   if [ -n "$file" ]; then
@@ -89,14 +94,18 @@ use_downloaded_scan_toml() {
 
 # Makes a package read the Scan.toml in file $2 until restore_files runs. $1 is the package's
 # scan_config_info. A local Scan.toml, or the package's Scan.toml when it has none, is overwritten
-# with it. A remote one cannot be, so [scan] configPath in Ballerina.toml points to the file
-# instead.
+# with it. A remote one cannot be, so [scan] configPath in Ballerina.toml points to a copy of the
+# file in the package instead: bal scan resolves the relative paths of a remote Scan.toml against
+# the package, but those of a local one against its folder.
 use_scan_toml() {
-  local new="$2" pkg target native
+  local new="$2" pkg target native copy
   read_scan_config "$1"
   pkg="$SCAN_PKG"
   if [ -n "$SCAN_URL" ]; then
-    native="$(to_native_path "$(cd "$(dirname "$new")" && pwd -P)/$(basename "$new")")"
+    copy="$pkg/.scan-ballerina.Scan.toml"
+    protect "$copy" "$(sha256_of "$new")"
+    cp "$new" "$copy"
+    native="$(to_native_path "$(cd "$pkg" && pwd -P)/$(basename "$copy")")"
     target="$(mktemp "$WORK/Ballerina.toml.XXXXXX")"
     with_config_path "$pkg/Ballerina.toml" "$native" > "$target"
     protect "$pkg/Ballerina.toml" "$(sha256_of "$target")"

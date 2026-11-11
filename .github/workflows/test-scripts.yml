@@ -121,7 +121,8 @@ jobs:
             "$RUNNER_TEMP/sarif-golden/golden.sarif" "$RUNNER_TEMP/sarif-suppressed/suppressed.sarif" \
             "$RUNNER_TEMP/sarif-suppressed/upload/suppressed.sarif"
 
-  # alert-changes.jq picks the code scanning alerts to dismiss and reopen. The alerts are faked as
+  # alert-changes.jq picks the code scanning alerts to dismiss and reopen, and those whose suppression
+  # was removed off the default branch. The alerts are faked as
   # the code scanning API lists them.
   alert-changes:
     name: Alert dismissal
@@ -158,9 +159,12 @@ jobs:
             alert(6; "dismissed"; 5; "bal-scan/"; "won'"'"'t fix"; "Dismissed by hand"),
             alert(7; "dismissed"; 1; "bal-scan/"; "won'"'"'t fix"; "\($m).")
           ' > "$WORK/alerts.jsonl"
-          CHANGES="$(jq -sc -f scripts/alert-changes.jq --slurpfile results "$WORK/results.json" \
-            --arg category bal-scan --arg marker "$MARKER" --arg reason "won't fix" --argjson limit 280 \
-            "$WORK/alerts.jsonl" | jq -sc .)"
+          picked() {
+            jq -sc -f scripts/alert-changes.jq --slurpfile results "$WORK/results.json" \
+              --arg category bal-scan --arg marker "$MARKER" --arg reason "won't fix" --argjson limit 280 \
+              --arg mode "$1" "$WORK/alerts.jsonl" | jq -sc .
+          }
+          CHANGES="$(picked change)"
           EXPECTED="$(jq -nc --arg m "$MARKER" '[
             {number: 1, change: {state: "dismissed", dismissed_reason: "won'"'"'t fix", dismissed_comment: "\($m): Accepted"}},
             {number: 5, change: {state: "open"}}
@@ -168,6 +172,10 @@ jobs:
           # 3 is another category, 4 has a suppressed and a reported result, 6 was dismissed by hand,
           # and 7 is already dismissed.
           [ "$CHANGES" = "$EXPECTED" ] || fail "Expected $EXPECTED, got $CHANGES"
+          # Off the default branch, only 5 was dismissed by the action and is now reported unsuppressed.
+          REINTRODUCED="$(picked reintroduced)"
+          [ "$REINTRODUCED" = '[{"rule":"r:1","file":"a.bal","line":2,"url":null}]' ] \
+            || fail "Expected alert 5 as reintroduced, got $REINTRODUCED"
 
   # The supported scan tools are 0.13.0 and later, and the 0.11.x backport of its features from
   # 0.11.1 for Ballerina 2201.12.x. 0.12.x has neither suppressions nor --exclude-tests.
@@ -345,8 +353,59 @@ jobs:
           [ "$(sha256sum test/restore/sonarqube-failure/Scan.toml)" = "$BEFORE" ] || fail "The SARIF scan must leave Scan.toml as it is"
           [ -z "$(git status --porcelain -- test)" ] || fail "The scans left changes in test: $(git status --porcelain -- test)"
 
+  # sonar-cache.sh drops the plugin folders the scan did not read before the cache is saved. The
+  # cache is faked, and reading a file stands in for SonarScanner loading it.
+  sonar-cache-pruning:
+    name: SonarScanner cache pruning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check that only unread plugin folders are dropped
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          source scripts/lib.sh
+          # Usage: setup NAME; creates a work directory and a cache with a read plugin (used), an
+          # unread plugin (old), and an unread JRE archive (jre).
+          setup() {
+            WORK="$RUNNER_TEMP/prune-$1"
+            HOME_DIR="$WORK/home"
+            mkdir -p "$HOME_DIR/cache/used" "$HOME_DIR/cache/old" "$HOME_DIR/cache/jre" "$HOME_DIR/cache/_unzip/old.jar_unzip"
+            echo a > "$HOME_DIR/cache/used/used.jar"
+            echo b > "$HOME_DIR/cache/old/old.jar"
+            echo c > "$HOME_DIR/cache/jre/jre.tar.gz"
+            touch -d '2 days ago' "$HOME_DIR"/cache/*/*
+            : > "$WORK/sonarqube-failures.txt"
+            mark_sonar_cache "$HOME_DIR/cache" "$WORK/sonar-cache-start"
+            sleep 1
+          }
+          run() {
+            GITHUB_OUTPUT=/dev/null SCAN_WORK_DIR="$WORK" SCAN_SUCCEEDED="$1" SONAR_USER_HOME_DIR="$HOME_DIR" \
+              SONAR_CACHE_PREFIX=test- RESTORED_KEY=test-old bash scripts/sonar-cache.sh
+          }
+
+          setup pruned
+          cat "$HOME_DIR/cache/used/used.jar" > /dev/null
+          run true
+          [ -f "$HOME_DIR/cache/used/used.jar" ] || fail "A plugin the scan read must be kept"
+          [ -f "$HOME_DIR/cache/jre/jre.tar.gz" ] || fail "The JRE archive must be kept"
+          [ ! -e "$HOME_DIR/cache/old" ] || fail "A plugin the scan did not read must be dropped"
+          [ ! -e "$HOME_DIR/cache/_unzip/old.jar_unzip" ] || fail "The unzipped copy of a dropped plugin must be dropped"
+
+          # Nothing read: access times are not tracked, so nothing is dropped.
+          setup untracked
+          run true
+          [ -e "$HOME_DIR/cache/old" ] || fail "Nothing must be dropped when no restored file was read"
+
+          setup failed
+          cat "$HOME_DIR/cache/used/used.jar" > /dev/null
+          run false
+          [ -e "$HOME_DIR/cache/old" ] || fail "Nothing must be dropped after a failed scan"
+
   # test/toml holds Scan.toml files with comments, inline tables, indented and spaced headers,
-  # tabs and sub-tables, and two forms of the sonarqube entry the action must reject before scanning.
+  # tabs and sub-tables, and the forms of [[platform]] entries the action must reject before scanning.
   toml-editing:
     name: Scan.toml editing
     runs-on: ubuntu-latest
@@ -362,8 +421,29 @@ jobs:
           # The edited file must still be valid TOML, with the other entry left.
           [ "$(drop_sonarqube_platform < test/toml/mixed.toml | yq -p toml -o json -I0 '[.platform[].name]')" = '["other"]' ]
           sonarqube_entry_replaceable test/toml/mixed.toml
-          ! sonarqube_entry_replaceable test/toml/inline-array.toml
-          ! sonarqube_entry_replaceable test/toml/multiline-string.toml
+          # set -e ignores a failing "! command", so each rejection is checked explicitly.
+          for f in inline-array inline-array-other multiline-string; do
+            if sonarqube_entry_replaceable "test/toml/$f.toml"; then
+              echo "::error::test/toml/$f.toml must be rejected"
+              exit 1
+            fi
+          done
+
+      # A member scanned on its own, with no Scan.toml, gets the workspace's Scan.toml as the base of
+      # the one the SonarQube scan writes.
+      - name: Find the workspace of a member
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          source scripts/lib.sh
+          [ "$(enclosing_workspace test/projects/workspace/billing)" = test/projects/workspace ] \
+            || fail "billing is a member of test/projects/workspace"
+          if enclosing_workspace test/projects/single > /dev/null; then fail "test/projects/single is in no workspace"; fi
+          INFO="$(SCAN_WORK_DIR="$RUNNER_TEMP/members" SCAN_PATHS=test/projects/workspace/billing GITHUB_OUTPUT=/dev/null \
+            bash -c 'mkdir -p "$SCAN_WORK_DIR" && bash scripts/find-packages.sh > /dev/null && cat "$SCAN_WORK_DIR/units.json"')"
+          jq -e '.[0]."scan-config"[0]."workspace-scan-toml" == "test/projects/workspace/Scan.toml"' <<< "$INFO" > /dev/null \
+            || fail "The member must keep the workspace Scan.toml: $INFO"
 
   # validate.sh tells restricted runs, those with a read-only GITHUB_TOKEN and no secrets, from the
   # event, the actor and the event file. Each case fakes them as GitHub sets them for that run.

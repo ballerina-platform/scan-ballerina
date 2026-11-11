@@ -37,9 +37,9 @@ tool_supported() {
   return 1
 }
 
-# The first Ballerina with workspaces, and the first supported scan tool that scans them. 0.11.x
-# loads only packages.
-MIN_WORKSPACE_BALLERINA_VERSION="2201.13.0"
+# The first Ballerina the scan tool 0.13.0, the first supported one that scans workspaces, runs on.
+# 0.11.x loads only packages.
+MIN_WORKSPACE_BALLERINA_VERSION="2201.13.2"
 MIN_WORKSPACE_TOOL_VERSION="0.13.0"
 
 # Prints a boolean input that defaults to true as true or false.
@@ -250,6 +250,14 @@ sonar_scanner_zip() {
 # that the Actions cache of one server's analyzers is never mixed with another's.
 sonar_user_home() {
   printf '%s/sonar-user-home/%s' "$(tool_cache_dir)" "$1"
+}
+
+# Sets the access time of each file in SonarScanner cache folder $1 to 1970, then creates marker
+# file $2, so that sonar-cache.sh can tell the files the scan read by an access time newer than it.
+mark_sonar_cache() {
+  [ -d "$1" ] || return 0
+  find "$1" -mindepth 2 -maxdepth 2 -type f ! -path "$1/_*" -exec touch -a -t 197001020000 {} + 2> /dev/null || return 0
+  touch "$2"
 }
 sonar_scanner_sha256() {
   case "$1" in
@@ -557,6 +565,22 @@ scan_config_info() {
     '{path: $path, table: $table, config: $config, url: $url, "scan-toml": $file}'
 }
 
+# Prints the directory of the workspace whose Ballerina.toml lists package $1, both relative to the
+# repository root, or fails when there is none.
+enclosing_workspace() {
+  local dir="$1"
+  while [ "$dir" != "." ] && [ "$dir" != "/" ]; do
+    dir="$(dirname "$dir")"
+    [ -f "$dir/Ballerina.toml" ] \
+      && grep -Eq '^[[:space:]]*\[workspace\][[:space:]]*(#.*)?'$'\r''?$' "$dir/Ballerina.toml" \
+      && yq -p toml -o json -I0 '.workspace.packages // []' "$dir/Ballerina.toml" 2> /dev/null \
+        | jq -e -L "$(dirname "${BASH_SOURCE[0]}")" --arg ws "$dir" --arg p "$1" 'include "common";
+            any(.[]; join_path($ws; tostring | sub("^\\./"; "") | sub("/+$"; "")) == $p)' > /dev/null \
+      && { printf '%s' "$dir"; return 0; }
+  done
+  return 1
+}
+
 # Sets SCAN_PKG, SCAN_CONFIG, SCAN_URL and SCAN_TOML from the scan_config_info JSON in $1.
 read_scan_config() {
   { IFS= read -r SCAN_PKG; IFS= read -r SCAN_CONFIG; IFS= read -r SCAN_URL; IFS= read -r SCAN_TOML; } \
@@ -677,14 +701,22 @@ drop_sonarqube_platform() {
   '
 }
 
-# Succeeds when drop_sonarqube_platform leaves valid TOML without a sonarqube [[platform]] entry
-# in Scan.toml $1, so that the SonarQube scan can replace the entry. It cannot for an array of
-# inline tables, or a multi-line string in the entry that holds a line starting with "[".
+# Succeeds when Scan.toml $1, with its sonarqube [[platform]] entry dropped and the entry the
+# SonarQube scan appends added, is valid TOML with exactly one sonarqube entry, as use_plugin in
+# scan.sh writes it. It cannot be for a platform array of inline tables, whatever its entries, or a
+# multi-line string in the entry that holds a line starting with "[".
 sonarqube_entry_replaceable() {
   local left
-  left="$(drop_sonarqube_platform < "$1" \
+  ! inline_platform_array "$1" || return 1
+  left="$( { drop_sonarqube_platform < "$1"; printf '\n[[platform]]\nname = "sonarqube"\npath = "plugin.jar"\n'; } \
     | yq -p toml -o json -I0 '[.platform // [] | .[] | select(.name == "sonarqube")] | length' 2> /dev/null | tr -d '\r')" || return 1
-  [ "$left" = 0 ]
+  [ "$left" = 1 ]
+}
+
+# Succeeds when Scan.toml $1 sets platform as a top-level key, such as an array of inline tables,
+# which a [[platform]] table cannot be appended to.
+inline_platform_array() {
+  awk '/^[[:space:]]*\[/ { exit } /^[[:space:]]*("platform"|\047platform\047|platform)[[:space:]]*=/ { found = 1; exit } END { exit !found }' "$1"
 }
 
 # Kept in the git directory so a later run can restore files a stopped run left changed, while git

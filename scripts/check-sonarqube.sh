@@ -110,7 +110,7 @@ while IFS= read -r unit; do
     entry="$(jq -c 'map(select(.name == "sonarqube")) | first // {}' <<< "$platforms")"
     # The SonarQube scan replaces this entry with one for the resolved plugin.
     if ! sonarqube_entry_replaceable "$scan_toml"; then
-      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml_name' is in a form the action cannot replace. Write it as a [[platform]] table with name = \"sonarqube\" on its own line, without a multi-line string that holds a line starting with '['."
+      error "Package '$pkg': the [[platform]] entries in '$scan_toml_name' are in a form the action cannot change. Write each entry as a [[platform]] table, not an array of inline tables, with name = \"...\" on its own line and without a multi-line string that holds a line starting with '['."
       continue
     fi
   fi
@@ -152,10 +152,16 @@ while IFS= read -r unit; do
       continue
     fi
   elif [ -n "$entry_properties" ]; then
-    properties_file="$base/$(to_unix_path "$entry_properties")"
-    is_absolute_path "$entry_properties" && properties_file="$(to_unix_path "$entry_properties")"
+    # bal scan resolves it against the folder of Scan.toml when the file is there, and otherwise
+    # passes it unchanged to the platform plugin, which runs in the package.
+    if is_absolute_path "$entry_properties"; then
+      properties_file="$(to_unix_path "$entry_properties")"
+    else
+      properties_file="$base/$(to_unix_path "$entry_properties")"
+      [ -f "$properties_file" ] || properties_file="$pkg/$(to_unix_path "$entry_properties")"
+    fi
     if [ ! -f "$properties_file" ]; then
-      error "Package '$pkg': sonarProjectPropertiesPath in '$scan_toml_name' is '$entry_properties', which does not exist."
+      error "Package '$pkg': sonarProjectPropertiesPath in '$scan_toml_name' is '$entry_properties', which is not an existing file relative to '$base' or to the package."
       continue
     fi
   elif [ -f "$pkg/sonar-project.properties" ]; then

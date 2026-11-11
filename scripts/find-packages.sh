@@ -108,6 +108,10 @@ scan_config_problem() {
 # a Dependencies.toml, whatever platforms are selected, since a scan fails without them. Checked
 # before the tools are downloaded.
 PROBLEMS=()
+# The scan_config_info of each enclosing workspace, by directory, and the workspace Scan.toml of
+# each package without its own.
+WS_INFOS='{}'
+PKG_WS='{}'
 INFOS="$(while IFS= read -r pkg; do
   [ -d "$pkg" ] || continue
   scan_config_info "$pkg"
@@ -121,7 +125,21 @@ while IFS= read -r info; do
   read_scan_config "$info"
   [ -f "$SCAN_PKG/Dependencies.toml" ] \
     || PROBLEMS+=("Package '$SCAN_PKG' has no Dependencies.toml, and bal scan scans only packages whose dependencies are locked. Run 'bal build' in the package and commit its Dependencies.toml, or run 'bal build' in a step before this action.")
+  # bal scan reads the workspace Scan.toml for a member without its own. The SonarQube scan writes
+  # one for such a member, so it starts from the workspace's to keep its settings.
+  if [ -z "$SCAN_TOML" ] && ws="$(enclosing_workspace "$SCAN_PKG")"; then
+    if ! jq -e --arg w "$ws" 'has($w)' <<< "$WS_INFOS" > /dev/null; then
+      ws_info="$(scan_config_info "$ws")"
+      problem="$(scan_config_problem "$ws_info")"
+      [ -z "$problem" ] || PROBLEMS+=("$problem")
+      WS_INFOS="$(jq -c --arg w "$ws" --argjson i "$ws_info" '. + {($w): $i}' <<< "$WS_INFOS")"
+    fi
+    PKG_WS="$(jq -c --arg p "$SCAN_PKG" --arg w "$ws" --argjson infos "$WS_INFOS" \
+      '. + (if $infos[$w]."scan-toml" != "" then {($p): $infos[$w]."scan-toml"} else {} end)' <<< "$PKG_WS")"
+  fi
 done < <(jq -c '.[]' <<< "$INFOS")
+INFOS="$(jq -c --argjson ws "$PKG_WS" \
+  'map(if $ws[.path] then . + {"workspace-scan-toml": $ws[.path]} else . end)' <<< "$INFOS")"
 if [ "${#PROBLEMS[@]}" -gt 0 ]; then
   for p in "${PROBLEMS[@]}"; do log_error "$p"; done
   exit 1
