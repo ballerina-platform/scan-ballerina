@@ -5,7 +5,7 @@
 # target, build and .git. A workspace is scanned as one unit from its root, so its member
 # packages are not scanned again on their own. Units matching EXCLUDE_PATHS are dropped. Each
 # package's remote Scan.toml is downloaded to the work directory, and a package whose Scan.toml
-# settings cannot be used, or that has no Dependencies.toml, fails the step. Files that an earlier
+# settings cannot be used fails the step. Files that an earlier
 # run left changed, because it stopped before restoring them, are restored first.
 #
 # Inputs (environment): SCAN_WORK_DIR, SCAN_PATHS, EXCLUDE_PATHS, CATEGORY.
@@ -104,9 +104,9 @@ scan_config_problem() {
   fi
 }
 
-# Each package, including each workspace member, needs Scan.toml settings the action can use and
-# a Dependencies.toml, whatever platforms are selected, since a scan fails without them. Checked
-# before the tools are downloaded.
+# Each package, including each workspace member, needs Scan.toml settings the action can use,
+# whatever platforms are selected, since a scan fails without them. Checked before the tools are
+# downloaded. bal scan itself fails a package whose dependencies are not locked in Dependencies.toml.
 PROBLEMS=()
 # The scan_config_info of each enclosing workspace, by directory, and the workspace Scan.toml of
 # each package without its own.
@@ -121,10 +121,7 @@ done < <(jq -r -L "$SCRIPT_DIR" 'include "common";
 while IFS= read -r info; do
   problem="$(scan_config_problem "$info")"
   [ -z "$problem" ] || PROBLEMS+=("$problem")
-  # bal scan never resolves dependencies itself: it scans only the versions bal build locked.
   read_scan_config "$info"
-  [ -f "$SCAN_PKG/Dependencies.toml" ] \
-    || PROBLEMS+=("Package '$SCAN_PKG' has no Dependencies.toml, and bal scan scans only packages whose dependencies are locked. Run 'bal build' in the package and commit its Dependencies.toml, or run 'bal build' in a step before this action.")
   # bal scan reads the workspace Scan.toml for a member without its own. The SonarQube scan writes
   # one for such a member, so it starts from the workspace's to keep its settings.
   if [ -z "$SCAN_TOML" ] && ws="$(enclosing_workspace "$SCAN_PKG")"; then

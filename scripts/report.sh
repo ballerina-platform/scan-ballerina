@@ -8,7 +8,8 @@
 # ARTIFACT_URL, GCS_SKIPPED, SONARQUBE_SKIPPED.
 # Reads: $SCAN_WORK_DIR/sonarqube-failures.txt, written by scan.sh. A package whose SonarQube scan
 # failed makes the result error and fails the step here, after the SARIF file was uploaded. Also
-# reads $SCAN_WORK_DIR/alerts.json, written by dismiss-alerts.sh.
+# reads $SCAN_WORK_DIR/scan-failures.txt, written by scan.sh, for the job summary, and
+# $SCAN_WORK_DIR/alerts.json, written by dismiss-alerts.sh.
 # Outputs: result, uploads, high-count, medium-count, low-count, total-count, packages-scanned,
 # suppressed-count.
 
@@ -65,10 +66,18 @@ if [ -n "$WORK" ] && [ -s "$WORK/sonarqube-failures.txt" ]; then
     "${SONAR_FAILURES[@]}")
 fi
 
+# Units whose SARIF scan failed, with the errors bal scan printed, such as for dependencies that
+# are not locked.
+SCAN_FAILURES=()
+if [ -n "$WORK" ] && [ -s "$WORK/scan-failures.txt" ]; then
+  while IFS= read -r line; do [ -n "$line" ] && SCAN_FAILURES+=("$line"); done < "$WORK/scan-failures.txt"
+fi
+
 REASONS=()
 if [ -n "${FAILED_STEP:-}" ]; then
   RESULT=error
   REASONS+=("The step failed while it was trying to ${FAILED_STEP}. See the step log for the errors." \
+    "${SCAN_FAILURES[@]+"${SCAN_FAILURES[@]}"}" \
     "${SONAR_FAILURES[@]+"${SONAR_FAILURES[@]}"}")
 elif [ "${UNIT_COUNT:-0}" = "0" ]; then
   RESULT=skipped

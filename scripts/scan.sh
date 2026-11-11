@@ -22,7 +22,8 @@
 # INCLUDE_RULES, EXCLUDE_RULES, EXCLUDE_TESTS, SUPPRESSIONS, CATEGORY.
 # Writes: $SCAN_WORK_DIR/reports/<index>.sarif per unit, in the order of units.json,
 # $SCAN_WORK_DIR/sonarqube-uploads.json and $SCAN_WORK_DIR/sonarqube-failures.txt, one line per
-# package whose SonarQube pass failed.
+# package whose SonarQube pass failed, and $SCAN_WORK_DIR/scan-failures.txt, one line per unit
+# whose SARIF pass failed, with the errors bal scan printed.
 # Outputs: packages, the number of packages scanned, when every unit was scanned.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -126,6 +127,13 @@ use_scan_toml() {
   fi
 }
 
+# Prints the errors bal scan wrote to log file $1, such as "cannot scan package 'org/name': its
+# dependencies are not locked in Dependencies.toml", on one line, or nothing when there are none.
+scan_errors() {
+  { grep -E '^(bal scan: )?error: ' "$1" 2> /dev/null || true; } | tr -d '\r' \
+    | sed -E 's/^(bal scan: )?error: //' | head -n 3 | paste -sd ' ' -
+}
+
 # Runs bal scan in a directory and keeps its output in a log file. Returns its exit code.
 run_bal_scan() {
   local dir="$1" log="$2"
@@ -162,10 +170,11 @@ while IFS= read -r unit; do
   restore_files
 
   # bal.bat does not always pass on the exit code of bal scan, so the report decides too.
+  errors="$(scan_errors "$WORK/logs/scan-$idx.log")"
   if [ "$status" -ne 0 ]; then
-    FAILED+=("$path: bal scan exited with code $status")
+    FAILED+=("$path: bal scan exited with code $status${errors:+: $errors}")
   elif [ ! -f "$report" ] || ! jq -e '.runs[0]' "$report" > /dev/null 2>&1; then
-    FAILED+=("$path: bal scan did not write a SARIF report. See its output above")
+    FAILED+=("$path: bal scan did not write a SARIF report${errors:+: $errors}. See its output above")
   else
     cp "$report" "$out"
   fi
@@ -217,7 +226,8 @@ while IFS= read -r unit; do
     dashboard="$(read_property "$task_file" dashboardUrl | sed 's/\\:/:/g')"
     restore_files
     if [ "$status" -ne 0 ]; then
-      SONAR_FAILED+=("$path: reporting to SonarQube failed, bal scan exited with code $status")
+      errors="$(scan_errors "$log")"
+      SONAR_FAILED+=("$path: reporting to SonarQube failed, bal scan exited with code $status${errors:+: $errors}")
     elif [ -z "$task_id" ]; then
       SONAR_FAILED+=("$path: reporting to SonarQube failed, since SonarScanner did not submit the analysis. See the SonarScanner output above")
     else
@@ -232,6 +242,8 @@ done < <(jq -c '.[]' "$WORK/units.json")
 jq -sc '.' "$WORK/sonarqube-uploads.jsonl" > "$WORK/sonarqube-uploads.json"
 
 if [ "${#FAILED[@]}" -gt 0 ]; then
+  # report.sh puts them in the job summary.
+  printf '%s.\n' "${FAILED[@]}" > "$WORK/scan-failures.txt"
   for f in "${FAILED[@]}" "${SONAR_FAILED[@]+"${SONAR_FAILED[@]}"}"; do log_error "$f."; done
   die "bal scan failed for ${#FAILED[@]} of $INDEX package(s), so no SARIF file was produced."
 fi

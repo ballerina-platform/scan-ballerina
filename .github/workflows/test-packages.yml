@@ -144,3 +144,37 @@ jobs:
             || fail "exclude-tests: true must leave the test sources out: $(uris "$WITHOUT_TESTS")"
           [ "$(uris "$WITH_TESTS")" = '["test/exclude-tests/main.bal","test/exclude-tests/tests/main_test.bal"]' ] \
             || fail "exclude-tests: false must scan the test sources: $(uris "$WITH_TESTS")"
+
+  # test/unlocked has no Dependencies.toml. bal scan refuses it, and its error must reach the
+  # annotations and the job summary.
+  unlocked-dependencies:
+    name: A package without Dependencies.toml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Scan
+        id: scan
+        continue-on-error: true
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/unlocked
+          category: unlocked
+
+      - name: Check that the scan failed with the error of bal scan
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.scan.outcome }}
+          RESULT: ${{ steps.scan.outputs.result }}
+          SARIF_FILE: ${{ steps.scan.outputs.sarif-file }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$OUTCOME" = failure ] || fail "The step must fail, but its outcome is '$OUTCOME'"
+          [ "$RESULT" = error ] || fail "result is '$RESULT', expected error"
+          [ -z "$SARIF_FILE" ] || fail "sarif-file must be empty, got '$SARIF_FILE'"
+          WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-unlocked-*)"
+          grep -q "test/unlocked: bal scan exited with code 1: .*not locked in Dependencies.toml" "$WORK/scan-failures.txt" \
+            || fail "The failure must carry the error of bal scan: $(cat "$WORK/scan-failures.txt" 2> /dev/null)"
+          [ -z "$(git status --porcelain -- test)" ] || fail "The scan left changes in test: $(git status --porcelain -- test)"

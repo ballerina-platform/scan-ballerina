@@ -258,11 +258,10 @@ When `configPath` is an `https` URL, the action downloads the file once, right a
 
 The action sets `--exclude-tests`, from `exclude-tests`, and turns off the `[gate]` of `Scan.toml`, as in [Gate on findings](#gate-on-findings). The other settings, such as `[rule]`, `[analysis]` and `[suppression]`, apply as `bal scan` reads them. `include-rules` adds to `include` in `[rule]` and `exclude-rules` to `exclude`, and neither can be used when `Scan.toml` sets the other list.
 
-`bal scan` scans only packages whose dependencies are locked in `Dependencies.toml`, which `bal build` writes. Commit `Dependencies.toml` with each package, as Ballerina recommends, or run `bal build` in a step before the action.
+`bal scan` scans only packages whose dependencies are locked in `Dependencies.toml`, which `bal build` writes, and fails a package without it. Commit `Dependencies.toml` with each package, as Ballerina recommends, or run `bal build` in a step before the action. The step then fails with the error of `bal scan`, in the annotations and the job summary.
 
 Whatever platforms are selected, the step fails after packages are found, before the tools are downloaded, when a package:
 
-- has no `Dependencies.toml`.
 - sets `configPath` to an `http` or other non-`https` URL. The scan tool loads the platform plugin JAR of each `[[platform]]` entry, so the file must not be changed in transit.
 - sets `configPath` to an `https` URL that cannot be downloaded, or that is not valid TOML.
 - sets `configPath` in a form the action cannot change, such as an inline table. Write it as a `configPath = "..."` line under `[scan]`.
@@ -335,7 +334,7 @@ Findings never fail the step unless you set `fail-on-severity`. Problems with th
 | No package found | Passes with a warning, result `skipped` |
 | A workspace with Ballerina older than `2201.13.2` or `bal scan` `0.11.x` | Fails before the tools are installed, or, when Ballerina Central cannot resolve a version, before any package is scanned |
 | A `tool-version` that is not supported, such as `0.12.0`, or a Ballerina for which Ballerina Central picks one | Fails before the scan tool is installed |
-| A package without `Dependencies.toml` | Fails after packages are found, before the tools are downloaded. See [`Scan.toml`](#scantoml) |
+| A package without `Dependencies.toml` | `bal scan` fails it, so it fails as below, with the error of `bal scan` in the annotations and the job summary. See [`Scan.toml`](#scantoml) |
 | `bal scan` fails for a package | The other packages are still scanned, then the step fails without a SARIF file |
 | SonarQube is unreachable or rejects the analysis of a package | The other packages are still scanned, the SARIF file is produced and sent to the other platforms, then the step fails with result `error` |
 | A package reads its `Scan.toml` from a non-`https` URL, an `https` URL that cannot be downloaded, or a missing file, or has a `[scan]` table without `configPath`, with any platforms | Fails after packages are found, before the tools are downloaded. See [`Scan.toml`](#scantoml) |
@@ -353,7 +352,7 @@ Findings never fail the step unless you set `fail-on-severity`. Problems with th
 The action is a composite action. Its logic is in the shell and `jq` scripts in [`scripts/`](scripts), which read their inputs from environment variables and can be run locally:
 
 1. `install-yq.sh` installs `yq` when the runner has no `yq` v4, as on Windows runners. `validate.sh` checks the inputs.
-2. `find-packages.sh` finds the packages and workspaces in `paths`, skipping `target`, `build` and `.git`. A workspace is scanned once from its root. It checks each package's `Scan.toml` setting and `Dependencies.toml`, and downloads a remote `Scan.toml`.
+2. `find-packages.sh` finds the packages and workspaces in `paths`, skipping `target`, `build` and `.git`. A workspace is scanned once from its root. It checks each package's `Scan.toml` setting, and downloads a remote `Scan.toml`.
 3. `check-sonarqube.sh` resolves each package's SonarQube settings. `actions/cache/restore` then restores the SonarScanner CLI and the SonarScanner cache of the servers' analyzers, unless an earlier use of the action in the job already has them.
 4. `resolve-versions.sh` resolves `latest` and empty versions, as in [Versions](#versions), asking Ballerina Central for the latest releases and, when the Ballerina version is known, for the latest scan tool compatible with it, and fails on a pair that does not work together, or on a workspace that the resolved versions cannot scan. [`setup-ballerina`](https://github.com/ballerina-platform/setup-ballerina) then installs the resolved Ballerina, unless it is the `bal` on the path. On Linux, a Ballerina installed from a `.deb` package is removed first, since `dpkg` cannot install another version over it.
 5. `install-scan-tool.sh` installs the scan tool: the resolved `tool-version`, or else, when the Ballerina version was only known once installed, such as `2201.13` or `latest` that Ballerina Central could not resolve, the latest version compatible with the installed Ballerina, which Ballerina Central picks and the action asks for once per Ballerina version in a job. It is pulled only when it is missing, and made active when another version is. With SonarQube, `install-sonarqube.sh` downloads the platform plugin, checked against the installed scan tool, and the SonarScanner CLI zip, when the Actions cache did not restore it. The zip is checked against its pinned SHA-256, also when restored, before it is extracted, and `actions/cache/save` saves it before the scan.
