@@ -266,7 +266,7 @@ runs:
 
     - name: Save the SonarScanner cache of the servers' analyzers
       id: save-sonar-cache
-      if: ${{ !cancelled() && steps.sonar-cache.outputs.save == 'true' }}
+      if: ${{ !cancelled() && steps.sonar-cache.outputs.save == 'true' && steps.validate.outputs.save-cache == 'true' }}
       continue-on-error: true
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:

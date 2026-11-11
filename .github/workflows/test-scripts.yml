@@ -245,6 +245,60 @@ jobs:
             run "$event" '' refs/heads/main "$event" || fail "validate.sh failed on $event"
             grep -qx default-branch=false "$WORK/$event.txt" || fail "$event must not count as the default branch"
           done
+          # A scheduled run's payload has no repository object.
+          echo '{"schedule": "0 0 * * *"}' > "$WORK/schedule-event.json"
+          : > "$WORK/schedule.txt"
+          GITHUB_EVENT_NAME=schedule GITHUB_EVENT_PATH="$WORK/schedule-event.json" GITHUB_REF=refs/heads/main \
+            GITHUB_OUTPUT="$WORK/schedule.txt" CATEGORY=schedule bash scripts/validate.sh > "$WORK/schedule.log" \
+            || fail "validate.sh failed on schedule"
+          grep -qx default-branch=true "$WORK/schedule.txt" || fail "schedule must count as the default branch"
+          for event in push schedule workflow_dispatch merge_group pull_request pull_request_review pull_request_review_comment; do
+            run "save-$event" '' refs/heads/main "$event" || fail "validate.sh failed on $event"
+            grep -qx save-cache=true "$WORK/save-$event.txt" || fail "$event must save the SonarScanner cache"
+          done
+          for event in pull_request_target workflow_run issue_comment repository_dispatch; do
+            run "save-$event" '' refs/heads/main "$event" || fail "validate.sh failed on $event"
+            grep -qx save-cache=false "$WORK/save-$event.txt" || fail "$event must not save the SonarScanner cache"
+          done
+
+      # Unsupported or unselected platforms only warn. A selected platform whose settings are missing
+      # or do not follow its schema fails the step.
+      - name: Check the platforms and platform-config validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          FAILURES=0
+          fail() { echo "::error::$1"; FAILURES=$((FAILURES + 1)); }
+          WORK="$RUNNER_TEMP/platform-validation"
+          mkdir -p "$WORK"
+          SONAR_OK=$'sonarqube:\n  host-url: https://sonar.example.com\n  token: abc'
+          # Usage: check NAME PLATFORMS PLATFORM_CONFIG pass|fail [KIND MESSAGE]
+          check() {
+            local status=0
+            GITHUB_OUTPUT=/dev/null PLATFORMS="$2" PLATFORM_CONFIG="$3" CATEGORY="$1" \
+              bash scripts/validate.sh > "$WORK/$1.log" || status=$?
+            if [ "$4" = pass ] && [ "$status" -ne 0 ]; then
+              fail "$1: must pass: $(cat "$WORK/$1.log")"
+            elif [ "$4" = fail ] && [ "$status" -eq 0 ]; then
+              fail "$1: must fail"
+            fi
+            if [ "$#" -ge 6 ] && ! grep -q "^::$5 .*$6" "$WORK/$1.log"; then
+              fail "$1: no $5 containing: $6. Got: $(cat "$WORK/$1.log")"
+            fi
+            echo "$1: checked"
+          }
+          check unknown-platform 'github-code-scanning, foo' '' pass warning "platforms has 'foo', which is not a supported platform"
+          check unknown-config-key github-code-scanning $'foo:\n  a: 1' pass warning "platform-config has settings for 'foo', which is not a supported platform"
+          check unselected-sonarqube github-code-scanning $'sonarqube:\n  tokn: x' pass warning "platform-config has settings for 'sonarqube', which is not in platforms"
+          check unselected-gcs sonarqube $'github-code-scanning:\n  a: 1\n'"$SONAR_OK" pass warning "platform-config has settings for 'github-code-scanning', which is not in platforms"
+          check gcs-empty github-code-scanning 'github-code-scanning: {}' pass
+          check gcs-settings github-code-scanning $'github-code-scanning:\n  a: 1' fail error "platform-config.github-code-scanning takes no settings"
+          check sonarqube-missing sonarqube '' fail error "sonarqube is in platforms, but platform-config has no settings for it"
+          check sonarqube-null sonarqube 'sonarqube:' fail error "sonarqube is in platforms, but platform-config has no settings for it"
+          check sonarqube-unknown-field sonarqube $'sonarqube:\n  tokn: x' fail error 'platform-config.sonarqube has an unknown field "tokn"'
+          check sonarqube-ok sonarqube "$SONAR_OK" pass
+          check not-a-mapping '' 'foo' fail error "platform-config must be a mapping keyed by platform"
+          [ "$FAILURES" -eq 0 ] || exit 1
 
       # bal scan leaves out the test sources and applies the suppressions itself, and its gate is
       # turned off, since report.sh applies the action's gate.

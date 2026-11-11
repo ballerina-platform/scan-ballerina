@@ -6,8 +6,8 @@
 # INCLUDE_RULES, EXCLUDE_RULES, FAIL_ON_SEVERITY, FAIL_ON_COUNT, ANNOTATIONS, JOB_SUMMARY,
 # ARTIFACTS, SUPPRESSIONS, PLATFORM_CONFIG, BALLERINA_VERSION, TOOL_VERSION, MATRIX (the matrix as
 # JSON).
-# Outputs: work-dir, github-code-scanning, restricted, default-branch, sonarqube, sonarqube-skipped,
-# artifacts (true or false), artifact-name.
+# Outputs: work-dir, github-code-scanning, restricted, default-branch, save-cache, sonarqube,
+# sonarqube-skipped, artifacts (true or false), artifact-name.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -44,7 +44,7 @@ while IFS= read -r p; do
   if one_of "$p" "${KNOWN_PLATFORMS[@]}"; then
     one_of "$p" "${SELECTED[@]+"${SELECTED[@]}"}" || SELECTED+=("$p")
   else
-    error "platforms has an unknown platform '$p'. Accepted values: ${KNOWN_PLATFORMS[*]}."
+    log_warning "platforms has '$p', which is not a supported platform. It is ignored. Supported platforms: ${KNOWN_PLATFORMS[*]}."
   fi
 done < <(split_list "${PLATFORMS:-}")
 selected() { one_of "$1" "${SELECTED[@]+"${SELECTED[@]}"}"; }
@@ -116,7 +116,7 @@ fi
 
 while IFS= read -r p; do
   if ! one_of "$p" "${KNOWN_PLATFORMS[@]}"; then
-    error "platform-config has an unknown platform '$p'. Accepted platforms: ${KNOWN_PLATFORMS[*]}."
+    log_warning "platform-config has settings for '$p', which is not a supported platform. They are ignored. Supported platforms: ${KNOWN_PLATFORMS[*]}."
   elif ! selected "$p"; then
     log_warning "platform-config has settings for '$p', which is not in platforms. They are ignored."
   fi
@@ -175,7 +175,8 @@ sonarqube_schema_errors() {
   ' <<< "$CONFIG"
 }
 
-if jq -e 'has("github-code-scanning") and (.["github-code-scanning"] // {} | length > 0)' <<< "$CONFIG" > /dev/null; then
+if selected github-code-scanning \
+  && jq -e '.["github-code-scanning"] // {} | length > 0' <<< "$CONFIG" > /dev/null; then
   error "platform-config.github-code-scanning takes no settings. It uses the github-token and category inputs."
 fi
 
@@ -203,7 +204,9 @@ selected github-code-scanning && GCS=true
 # have the default branch as GITHUB_REF but may scan pull request code, so they never count.
 DEFAULT_BRANCH=false
 case "${GITHUB_EVENT_NAME:-}" in
-  push | schedule | workflow_dispatch)
+  # Scheduled runs always run on the default branch, and their payload has no repository object.
+  schedule) DEFAULT_BRANCH=true ;;
+  push | workflow_dispatch)
     if [ -f "${GITHUB_EVENT_PATH:-}" ] && [ -n "${GITHUB_REF:-}" ] && jq -e --arg ref "$GITHUB_REF" \
       '.repository.default_branch // "" | . != "" and "refs/heads/\(.)" == $ref' "$GITHUB_EVENT_PATH" > /dev/null 2>&1; then
       DEFAULT_BRANCH=true
@@ -211,8 +214,21 @@ case "${GITHUB_EVENT_NAME:-}" in
     ;;
 esac
 
+# Later trusted runs load the cached analyzers with SONAR_TOKEN set, so a cache is saved only from
+# events whose code is trusted or whose cache only that pull request can restore. Events such as
+# pull_request_target, workflow_run and issue_comment save into the default branch's cache but may
+# run pull request code.
+SAVE_CACHE=false
+case "${GITHUB_EVENT_NAME:-}" in
+  push | schedule | workflow_dispatch | merge_group | pull_request | pull_request_review | pull_request_review_comment)
+    SAVE_CACHE=true
+    ;;
+esac
+
 SONARQUBE=false
-if selected sonarqube; then
+if selected sonarqube && jq -e '.sonarqube == null' <<< "$CONFIG" > /dev/null; then
+  error "sonarqube is in platforms, but platform-config has no settings for it. Add a 'sonarqube:' mapping with at least a token."
+elif selected sonarqube; then
   while IFS= read -r e; do [ -n "$e" ] && error "$e"; done < <(sonarqube_schema_errors)
   # Each plugin-version, at the platform level and under packages. latest and malformed versions
   # are left to the checks above.
@@ -268,6 +284,7 @@ set_output work-dir "$WORK"
 set_output github-code-scanning "$GCS"
 set_output restricted "$RESTRICTED"
 set_output default-branch "$DEFAULT_BRANCH"
+set_output save-cache "$SAVE_CACHE"
 set_output sonarqube "$SONARQUBE"
 set_output sonarqube-skipped "$(selected sonarqube && [ "$SONARQUBE" = false ] && echo true || echo false)"
 set_output artifacts "$ARTIFACTS"

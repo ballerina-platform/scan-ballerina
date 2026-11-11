@@ -225,6 +225,16 @@ SCANNER_ZIP="$(sonar_scanner_zip "$DIST")"
 SERVERS="$(jq -r '[.[]."host-url" | rtrimstr("/")] | unique | join("\n")' <<< "$RESOLVED" | sha256_of /dev/stdin | cut -c1-16)"
 SONAR_HOME="$(sonar_user_home "$SERVERS")"
 present() { [ -d "$1" ] && [ -n "$(ls -A "$1" 2> /dev/null)" ] && echo true || echo false; }
+
+# SonarScanner reads the truststore and keystore of a private CA from SONAR_USER_HOME/ssl, so the
+# user's own ssl folder is carried over to the action's SONAR_USER_HOME. It is outside the cache.
+USER_SONAR_HOME="$(to_unix_path "${SONAR_USER_HOME:-$HOME/.sonar}")"
+if [ -d "$USER_SONAR_HOME/ssl" ] && [ "$USER_SONAR_HOME" != "$SONAR_HOME" ]; then
+  mkdir -p "$SONAR_HOME"
+  rm -rf "$SONAR_HOME/ssl"
+  cp -R "$USER_SONAR_HOME/ssl" "$SONAR_HOME/ssl"
+  echo "SonarScanner uses the ssl folder of $USER_SONAR_HOME."
+fi
 set_output scanner-zip "$(to_native_path "$SCANNER_ZIP")"
 set_output scanner-key "scan-ballerina-sonar-scanner-zip-$PINNED_SONAR_SCANNER_VERSION-$DIST"
 set_output scanner-present "$({ [ -f "$SCANNER_ZIP" ] || [ "$(present "$SCANNER_DIR")" = true ]; } && echo true || echo false)"

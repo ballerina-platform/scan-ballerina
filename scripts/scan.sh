@@ -189,7 +189,8 @@ while IFS= read -r unit; do
     use_plugin "$settings" "$(unit_scan_config "$unit" "$path")"
     status=0
     # Set on this process only, and credentials never appear on the command line.
-    # SONAR_USER_HOME is the folder action.yml keeps in the Actions cache.
+    # SONAR_USER_HOME is the folder action.yml keeps in the Actions cache, with the user's ssl
+    # folder copied in by check-sonarqube.sh.
     PATH="${SCANNER_BIN:+$SCANNER_BIN:}$PATH" \
       SONAR_HOST_URL="$(jq -r '."host-url"' <<< "$settings")" \
       SONAR_TOKEN="$(sonar_token "$path")" \
