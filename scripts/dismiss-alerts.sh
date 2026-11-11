@@ -16,7 +16,7 @@
 # just uploaded. It first waits until code scanning has processed the upload, so that they are current.
 #
 # Inputs (environment): SCAN_WORK_DIR, GITHUB_TOKEN, GITHUB_REPOSITORY, GITHUB_REF, GITHUB_API_URL,
-# GITHUB_EVENT_PATH, DEFAULT_BRANCH, SARIF_ID, CATEGORY.
+# GITHUB_SHA, GITHUB_EVENT_PATH, DEFAULT_BRANCH, SARIF_ID, CATEGORY.
 # Reads: $SCAN_WORK_DIR/results.json and $SCAN_WORK_DIR/merged.sarif, written by merge-sarif.sh.
 # Writes: $SCAN_WORK_DIR/alerts.json, with the number of alerts dismissed, recorded (taken over or
 # given a changed justification), reopened, fixed and failed to change, left-open (the suppressed
@@ -99,10 +99,14 @@ list_alerts() {
   done
 }
 
+# Only on the default branch is GITHUB_SHA the commit of the upload, which tells the alerts this
+# analysis reported.
 alert_changes() {
+  local sha=""
+  [ "$1" != change ] || sha="${GITHUB_SHA:-}"
   jq -sc -f "$SCRIPT_DIR/alert-changes.jq" --slurpfile results "$WORK/results.json" \
     --arg category "$(trim "${CATEGORY:-bal-scan}")" --arg marker "$MARKER" --arg reason "$REASON" \
-    --argjson limit "$COMMENT_LIMIT" --arg mode "$1" "$2"
+    --argjson limit "$COMMENT_LIMIT" --arg sha "$sha" --arg mode "$1" "$2"
 }
 
 PROCESSING=0

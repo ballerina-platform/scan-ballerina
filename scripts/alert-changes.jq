@@ -7,6 +7,9 @@
 #              whatever its reason, and every other dismissed alert was dismissed by hand.
 #   $reason    The dismissed_reason it gives the open alerts it dismisses.
 #   $limit     The longest comment code scanning accepts.
+#   $sha       In change mode, the commit of the upload, or "". An alert whose latest instance is of
+#              another commit was not reported by this analysis, even when its last location is that
+#              of a result, such as when the code after the finding changed and gave it a new alert.
 #   $mode      change: prints {number, kind, patches} for each alert of the default branch to change,
 #              where patches are applied in order:
 #                dismiss   an open alert whose results are all suppressed.
@@ -15,9 +18,9 @@
 #                          one whose justification changed. Code scanning rejects dismissing a
 #                          dismissed alert, so it is reopened first, and keeps its reason.
 #                reopen    an alert this step dismissed whose results are no longer suppressed.
-#                fix       an alert this step dismissed with no result left, such as when the code was
-#                          fixed or deleted. Code scanning sets a reopened alert that the latest
-#                          analysis does not report to fixed.
+#                fix       an alert this step dismissed that this analysis did not report, such as
+#                          when the code was fixed or deleted. Code scanning sets a reopened alert
+#                          that the latest analysis does not report to fixed.
 #              unsuppressed: prints {number, rule, file, line, url, own, reason} for each dismissed
 #              alert of the scanned ref that matches results which are not suppressed, own being
 #              whether this step dismissed it.
@@ -44,6 +47,8 @@ def comment($r): ($marker + (if $r.justification != "" then ": \($r.justificatio
       .most_recent_instance.location as $l
       | {number, rule: .rule.id, file: $l.path, line: $l.start_line, url: .html_url, own: own, reason: .dismissed_reason}
     else empty end
+  elif ($reported | not) or ($sha != "" and (.most_recent_instance.commit_sha // $sha) != $sha) then
+    if own then {number, kind: "fix", patches: [{state: "open"}]} else empty end
   elif ($r | type) == "object" then
     if .state == "open" then
       {number, kind: "dismiss", patches: [{state: "dismissed", dismissed_reason: $reason, dismissed_comment: comment($r)}]}
@@ -51,8 +56,6 @@ def comment($r): ($marker + (if $r.justification != "" then ": \($r.justificatio
       {number, kind: "record", patches: [{state: "open"},
         {state: "dismissed", dismissed_reason: (.dismissed_reason // $reason), dismissed_comment: comment($r)}]}
     else empty end
-  elif own and $reported and $r == false then
+  elif own and $r == false then
     {number, kind: "reopen", patches: [{state: "open"}]}
-  elif own and ($reported | not) then
-    {number, kind: "fix", patches: [{state: "open"}]}
   else empty end

@@ -172,11 +172,13 @@ jobs:
             {rule: "r:1", file: "a.bal", line: 4, column: 1, suppressed: false, justification: ""},
             {rule: "r:1", file: "a.bal", line: 5, column: 1, suppressed: false, justification: ""}
           ]' > "$WORK/results.json"
-          # alert(number, state, line, category, reason, comment). Line 9 has no result.
+          # alert(number, state, line, category, reason, comment), last reported at commit "new".
+          # Line 9 has no result.
           jq -n --arg m "$MARKER" '
             def alert($n; $state; $line; $cat; $reason; $comment):
               {number: $n, state: $state, rule: {id: "r:1"}, dismissed_reason: $reason, dismissed_comment: $comment,
-               most_recent_instance: {category: $cat, location: {path: "a.bal", start_line: $line, start_column: 1}}};
+               most_recent_instance: {category: $cat, commit_sha: "new",
+                 location: {path: "a.bal", start_line: $line, start_column: 1}}};
             alert(1; "open"; 1; "bal-scan/"; null; null),
             alert(2; "open"; 2; "bal-scan/"; null; null),
             alert(3; "open"; 3; "other/"; null; null),
@@ -187,12 +189,15 @@ jobs:
             alert(8; "dismissed"; 3; "bal-scan/"; "false positive"; "Not reachable"),
             alert(9; "dismissed"; 9; "bal-scan/"; "won'"'"'t fix"; "\($m): Gone"),
             alert(10; "dismissed"; 9; "bal-scan/"; "false positive"; "Dismissed by hand"),
-            alert(11; "dismissed"; 1; "bal-scan/"; "won'"'"'t fix"; "\($m): Old reason")
+            alert(11; "dismissed"; 1; "bal-scan/"; "won'"'"'t fix"; "\($m): Old reason"),
+            # Last reported at an older commit, at the line of a result that now has another alert.
+            (alert(12; "dismissed"; 1; "bal-scan/"; "won'"'"'t fix"; "\($m): Accepted") | .most_recent_instance.commit_sha = "old"),
+            (alert(13; "dismissed"; 1; "bal-scan/"; "false positive"; "Dismissed by hand") | .most_recent_instance.commit_sha = "old")
           ' > "$WORK/alerts.jsonl"
           picked() {
             jq -sc -f scripts/alert-changes.jq --slurpfile results "$WORK/results.json" \
               --arg category bal-scan --arg marker "$MARKER" --arg reason "won't fix" --argjson limit 280 \
-              --arg mode "$1" "$WORK/alerts.jsonl" | jq -sc .
+              --arg sha "$([ "$1" = change ] && echo new)" --arg mode "$1" "$WORK/alerts.jsonl" | jq -sc .
           }
           CHANGES="$(picked change)"
           EXPECTED="$(jq -nc --arg m "$MARKER" '[
@@ -200,10 +205,12 @@ jobs:
             {number: 5, kind: "reopen", patches: [{state: "open"}]},
             {number: 8, kind: "record", patches: [{state: "open"}, {state: "dismissed", dismissed_reason: "false positive", dismissed_comment: "\($m)."}]},
             {number: 9, kind: "fix", patches: [{state: "open"}]},
-            {number: 11, kind: "record", patches: [{state: "open"}, {state: "dismissed", dismissed_reason: "won'"'"'t fix", dismissed_comment: "\($m): Accepted"}]}
+            {number: 11, kind: "record", patches: [{state: "open"}, {state: "dismissed", dismissed_reason: "won'"'"'t fix", dismissed_comment: "\($m): Accepted"}]},
+            {number: 12, kind: "fix", patches: [{state: "open"}]}
           ]')"
           # 3 is another category, 4 has a suppressed and a reported result, 6 and 10 were dismissed
-          # by hand and are not suppressed, and 7 already has this suppression's comment.
+          # by hand and are not suppressed, 7 already has this suppression's comment, and 13 was
+          # dismissed by hand and not reported.
           [ "$CHANGES" = "$EXPECTED" ] || fail "Expected $EXPECTED, got $CHANGES"
           # Off the default branch, the dismissed alerts whose results are reported unsuppressed.
           UNSUPPRESSED="$(picked unsuppressed)"
