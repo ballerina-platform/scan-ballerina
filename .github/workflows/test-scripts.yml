@@ -371,22 +371,24 @@ jobs:
             bash scripts/removed-suppressions.sh > "$WORK/log.txt"
           [ "$(jq -c . "$WORK/alerts.json")" = '{}' ] || fail "Expected no check with suppressions off"
 
-  # pr-comment.sh comments each suppressed finding on a line the pull request adds, at that line.
+  # pr-comment.sh comments the reason of each suppressed finding on a line the pull request adds: in
+  # the thread of code scanning's comment on its alert, or else at the line.
   pr-comment:
     name: Pull request comments
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      - name: Check the comments created, updated and left alone
+      - name: Check the replies and comments created, updated and left alone
         shell: bash
         run: |
           set -euo pipefail
           fail() { echo "::error::$1"; exit 1; }
           WORK="$RUNNER_TEMP/pr-comment"
-          mkdir -p "$WORK/bin" "$WORK/repo"
-          # A fake curl. GET prints $PR_FILE, $FILES_FILE or $COMMENTS_FILE by the URL; POST and PATCH
-          # record the method and URL in $CALLS_FILE and the request body in $PAYLOADS_FILE.
+          mkdir -p "$WORK/bin" "$WORK/repo" "$WORK/alerts"
+          # A fake curl. GET prints $PR_FILE, $FILES_FILE, $WORK/alerts/<n>.json or the comments by the
+          # URL: $COMMENTS_FILE, or $COMMENTS_FILE.later from the second read on when it exists. POST
+          # and PATCH record the method and URL in $CALLS_FILE and the request body in $PAYLOADS_FILE.
           cat > "$WORK/bin/curl" << 'EOF'
           #!/usr/bin/env bash
           method=GET url=""
@@ -400,7 +402,15 @@ jobs:
           if [ "$method" = GET ]; then
             case "$url" in
               */files) cat "$FILES_FILE" ;;
-              */comments) cat "$COMMENTS_FILE" ;;
+              */comments)
+                echo x >> "$READS_FILE"
+                if [ -f "$COMMENTS_FILE.later" ] && [ "$(wc -l < "$READS_FILE")" -ge 2 ]; then
+                  cat "$COMMENTS_FILE.later"
+                else
+                  cat "$COMMENTS_FILE"
+                fi
+                ;;
+              */code-scanning/alerts/*) echo "${url##*/}" >> "$ALERT_READS_FILE" && cat "$WORK/alerts/${url##*/}.json" ;;
               *) cat "$PR_FILE" ;;
             esac
             exit 0
@@ -412,6 +422,8 @@ jobs:
           EOF
           chmod +x "$WORK/bin/curl"
           echo '{"pull_request": {"number": 7, "head": {"sha": "0123456789abcdef"}}}' > "$WORK/event.json"
+          echo '{"head": {"sha": "0123456789abcdef"}}' > "$WORK/pr.json"
+          echo '{"runs": [{"tool": {"driver": {"name": "Ballerina Scan Tool"}}}]}' > "$WORK/merged.sarif"
           printf '%s\n' 'import ballerina/scan;' '' '@scan:Suppress {rules: ["ballerina:1"]}' 'function a() returns int {' \
             '    return checkpanic int:fromString("1");' '}' 'function b() returns int {' \
             '    return checkpanic int:fromString("2");' '}' > "$WORK/repo/main.bal"
@@ -419,8 +431,8 @@ jobs:
           # when the base branch changed the file since.
           jq -n '[{filename: "main.bal", patch: "@@ -1,2 +1,6 @@\n import ballerina/scan;\n \n+@scan:Suppress {rules: [\"ballerina:1\"]}\n+function a() returns int { // changed on the base\n+    return checkpanic int:fromString(\"1\");\n+}"}]' \
             > "$WORK/files.json"
-          # Line 5: two suppressed findings on an added line, commented together. Line 4: its text
-          # differs from the head's. Line 8: not added. Line 1: not suppressed. Severity none: not counted.
+          # Line 5: two suppressed findings on an added line. Line 4: its text differs from the head's.
+          # Line 8: not added. Line 1: not suppressed. Severity none: not counted.
           jq -n '[
             {severity: "low", rule: "ballerina:1", message: "Avoid checkpanic", file: "main.bal", line: 5, suppressed: true, justification: "Checked by <gateway>, ask @org/team"},
             {severity: "medium", rule: "ballerina:7", message: "Line\nbreak", file: "main.bal", line: 5, suppressed: true, justification: ""},
@@ -429,48 +441,86 @@ jobs:
             {severity: "high", rule: "ballerina:2", message: "m", file: "main.bal", line: 1, suppressed: false, justification: ""},
             {severity: "none", rule: "ballerina:9", message: "m", file: "main.bal", line: 5, suppressed: true, justification: "r"}]' \
             > "$WORK/results.json"
-          MARKER='<!-- scan-ballerina:suppression:bal-scan -->'
+          # Code scanning commented alert 67, of ballerina:1, at line 5. Comment 901 at the same line is
+          # another tool's alert 68, so ballerina:7 has no thread.
+          echo '{"rule": {"id": "ballerina:1"}, "tool": {"name": "Ballerina Scan Tool"}}' > "$WORK/alerts/67.json"
+          echo '{"rule": {"id": "ballerina:7"}, "tool": {"name": "CodeQL"}}' > "$WORK/alerts/68.json"
+          BOT='{"user": {"login": "github-advanced-security[bot]"}, "in_reply_to_id": null, "path": "main.bal", "line": 5}'
+          HUMAN='{"id": 1, "user": {"login": "octocat"}, "in_reply_to_id": null, "path": "main.bal", "line": 5, "body": "Looks good"}'
+          THREAD="$(jq -c '. + {id: 900, body: "## Ballerina Scan Tool / Avoid checkpanic\n\n[Show more details](https://github.com/owner/repo/security/code-scanning/67)"}' <<< "$BOT")"
+          OTHER="$(jq -c '. + {id: 901, body: "## CodeQL / Something\n\n[Show more details](https://github.com/owner/repo/security/code-scanning/68)"}' <<< "$BOT")"
+          M1='<!-- scan-ballerina:suppression:bal-scan:ballerina:1 -->'
+          M7='<!-- scan-ballerina:suppression:bal-scan:ballerina:7 -->'
+          # Usage: [BOT_TIMEOUT=...] [CODE_SCANNING=...] run
           run() {
             : > "$WORK/calls.txt"
             : > "$WORK/payloads.jsonl"
+            : > "$WORK/reads.txt"
+            : > "$WORK/alert-reads.txt"
             PATH="$WORK/bin:$PATH" PR_FILE="$WORK/pr.json" FILES_FILE="$WORK/files.json" COMMENTS_FILE="$WORK/comments.json" \
-              CALLS_FILE="$WORK/calls.txt" PAYLOADS_FILE="$WORK/payloads.jsonl" SCAN_WORK_DIR="$WORK" GITHUB_TOKEN=fake \
-              GITHUB_REPOSITORY=owner/repo GITHUB_WORKSPACE="$WORK/repo" GITHUB_EVENT_PATH="$WORK/event.json" \
-              CATEGORY=bal-scan bash scripts/pr-comment.sh > "$WORK/log.txt"
+              READS_FILE="$WORK/reads.txt" ALERT_READS_FILE="$WORK/alert-reads.txt" CALLS_FILE="$WORK/calls.txt" \
+              PAYLOADS_FILE="$WORK/payloads.jsonl" SCAN_WORK_DIR="$WORK" GITHUB_TOKEN=fake GITHUB_REPOSITORY=owner/repo \
+              GITHUB_WORKSPACE="$WORK/repo" GITHUB_EVENT_PATH="$WORK/event.json" CATEGORY=bal-scan \
+              CODE_SCANNING="${CODE_SCANNING:-true}" BOT_TIMEOUT="${BOT_TIMEOUT:-0}" BOT_POLL=1 \
+              bash scripts/pr-comment.sh > "$WORK/log.txt"
           }
-          echo '{"head": {"sha": "0123456789abcdef"}}' > "$WORK/pr.json"
+          payload() { jq -sr --arg url "$1" --slurpfile calls <(jq -R . "$WORK/calls.txt") \
+            '[$calls, .] | transpose | map(select(.[0] | endswith($url))) | first | .[1].body' "$WORK/payloads.jsonl"; }
 
-          # No comment yet: one comment at line 5 of the head, with both findings.
-          echo '[{"id": 1, "path": "main.bal", "line": 5, "body": "Looks good"}]' > "$WORK/comments.json"
+          # ballerina:1 gets a reply in its thread, and ballerina:7, without one, a comment at the line.
+          jq -n --argjson a "$HUMAN" --argjson b "$THREAD" --argjson c "$OTHER" '[$a, $b, $c]' > "$WORK/comments.json"
           run
-          [ "$(cat "$WORK/calls.txt")" = "POST https://api.github.com/repos/owner/repo/pulls/7/comments" ] \
-            || fail "Expected one new comment, got: $(cat "$WORK/calls.txt")"
-          jq -e '.path == "main.bal" and .line == 5 and .side == "RIGHT" and .commit_id == "0123456789abcdef"' "$WORK/payloads.jsonl" > /dev/null \
-            || fail "Expected the comment at line 5 of the head, got: $(cat "$WORK/payloads.jsonl")"
-          BODY="$(jq -r .body "$WORK/payloads.jsonl")"
-          [ "$(head -n1 <<< "$BODY")" = "$MARKER" ] || fail "Expected the marker first, got: $BODY"
-          grep -qxF '> **low** `ballerina:1`: Avoid checkpanic' <<< "$BODY" || fail "Expected the first finding's message, got: $BODY"
-          grep -qxF "$(printf '> **Reason:** Checked by &lt;gateway&gt;, ask @​org/team')" <<< "$BODY" \
-            || fail "Expected the reason without HTML or a mention, got: $BODY"
-          grep -qxF '> **medium** `ballerina:7`: Line break' <<< "$BODY" || fail "Expected the second finding on one line, got: $BODY"
-          grep -qxF '> **Reason:** _No reason given_' <<< "$BODY" || fail "Expected a missing reason to be said, got: $BODY"
-          ! grep -qE 'ballerina:[2-9]`: m$' <<< "$BODY" || fail "Expected no other finding, got: $BODY"
+          [ "$(sort "$WORK/calls.txt" | paste -sd ' ')" = "POST https://api.github.com/repos/owner/repo/pulls/7/comments POST https://api.github.com/repos/owner/repo/pulls/7/comments/900/replies" ] \
+            || fail "Expected a reply to 900 and a comment, got: $(cat "$WORK/calls.txt")"
+          REPLY="$(payload /900/replies)"
+          [ "$(head -n1 <<< "$REPLY")" = "$M1" ] || fail "Expected the reply to start with its marker, got: $REPLY"
+          grep -qxF "$(printf '**Reason:** Checked by &lt;gateway&gt;, ask @​org/team')" <<< "$REPLY" \
+            || fail "Expected the reason without HTML or a mention, got: $REPLY"
+          ! grep -qF 'Avoid checkpanic' <<< "$REPLY" || fail "Expected the reply to leave the message to code scanning's comment, got: $REPLY"
+          jq -se '.[] | select(.path) | .path == "main.bal" and .line == 5 and .side == "RIGHT" and .commit_id == "0123456789abcdef"' \
+            "$WORK/payloads.jsonl" > /dev/null || fail "Expected the comment at line 5 of the head, got: $(cat "$WORK/payloads.jsonl")"
+          OWN="$(payload /pulls/7/comments)"
+          [ "$(head -n1 <<< "$OWN")" = "$M7" ] || fail "Expected the comment to start with its marker, got: $OWN"
+          grep -qxF '> **medium** `ballerina:7`: Line break' <<< "$OWN" || fail "Expected the finding's message on one line, got: $OWN"
+          grep -qxF '> **Reason:** _No reason given_' <<< "$OWN" || fail "Expected a missing reason to be said, got: $OWN"
+          [ "$(sort "$WORK/alert-reads.txt" | paste -sd ' ')" = "67 68" ] || fail "Expected alerts 67 and 68 to be read once, read: $(cat "$WORK/alert-reads.txt")"
 
-          # The same comment already there: nothing is written.
-          jq -n --arg b "$BODY" '[{id: 55, path: "main.bal", line: 5, body: $b}]' > "$WORK/comments.json"
-          run
+          # Code scanning comments only after the first look: the step waits for it, then replies.
+          jq -n --argjson a "$HUMAN" '[$a]' > "$WORK/comments.json"
+          jq -n --argjson a "$HUMAN" --argjson b "$THREAD" '[$a, $b]' > "$WORK/comments.json.later"
+          BOT_TIMEOUT=5 run
+          rm "$WORK/comments.json.later"
+          grep -qxF "POST https://api.github.com/repos/owner/repo/pulls/7/comments/900/replies" "$WORK/calls.txt" \
+            || fail "Expected a reply once code scanning commented, got: $(cat "$WORK/calls.txt")"
+          grep -q 'did not comment every alert within 5s' "$WORK/log.txt" || fail "Expected ballerina:7 to stop the wait, got: $(cat "$WORK/log.txt")"
+
+          # Without an upload to code scanning nothing is waited for, and both get comments at the line.
+          jq -n --argjson b "$THREAD" '[$b]' > "$WORK/comments.json"
+          CODE_SCANNING=false run
+          [ "$(grep -c '/pulls/7/comments$' "$WORK/calls.txt")" -eq 2 ] || fail "Expected two comments at the line, got: $(cat "$WORK/calls.txt")"
+          [ ! -s "$WORK/alert-reads.txt" ] || fail "Expected no alert to be read without code scanning"
+
+          # The same reply and comment already there: nothing is written or waited for.
+          jq -n --argjson b "$THREAD" --arg r "$REPLY" --arg o "$OWN" \
+            '[$b, {id: 950, in_reply_to_id: 900, path: "main.bal", line: 5, body: $r}, {id: 951, in_reply_to_id: null, path: "main.bal", line: 5, body: $o}]' \
+            > "$WORK/comments.json"
+          BOT_TIMEOUT=60 run
           [ ! -s "$WORK/calls.txt" ] || fail "Expected no change, got: $(cat "$WORK/calls.txt")"
 
-          # A changed comment is edited, and a current one whose line has no suppressed finding says so.
-          # An outdated one, without a line, is left alone.
-          jq -n --arg m "$MARKER" '[{id: 55, path: "main.bal", line: 5, body: "\($m)\nold"},
-            {id: 56, path: "main.bal", line: 3, body: "\($m)\nold"}, {id: 57, path: "main.bal", line: null, body: "\($m)\nold"}]' \
+          # A changed reply keeps its form, and a current comment whose finding is no longer suppressed
+          # says so. An outdated one, without a line, is left alone.
+          jq -n --argjson b "$THREAD" --arg m1 "$M1" --arg o "$OWN" '[$b,
+            {id: 950, in_reply_to_id: 900, path: "main.bal", line: 5, body: "\($m1)\nold"},
+            {id: 951, in_reply_to_id: null, path: "main.bal", line: 5, body: $o},
+            {id: 952, in_reply_to_id: null, path: "main.bal", line: 3, body: "<!-- scan-ballerina:suppression:bal-scan:ballerina:3 -->\nold"},
+            {id: 953, in_reply_to_id: null, path: "main.bal", line: null, body: "<!-- scan-ballerina:suppression:bal-scan:ballerina:3 -->\nold"}]' \
             > "$WORK/comments.json"
           run
-          [ "$(sort "$WORK/calls.txt" | paste -sd ' ')" = "PATCH https://api.github.com/repos/owner/repo/pulls/comments/55 PATCH https://api.github.com/repos/owner/repo/pulls/comments/56" ] \
-            || fail "Expected comments 55 and 56 to be edited, got: $(cat "$WORK/calls.txt")"
-          jq -rs '.[1].body' "$WORK/payloads.jsonl" | grep -qF 'is no longer suppressed, as of 0123456.' \
-            || fail "Expected comment 56 to say it is no longer suppressed, got: $(cat "$WORK/payloads.jsonl")"
+          [ "$(sort "$WORK/calls.txt" | paste -sd ' ')" = "PATCH https://api.github.com/repos/owner/repo/pulls/comments/950 PATCH https://api.github.com/repos/owner/repo/pulls/comments/952" ] \
+            || fail "Expected comments 950 and 952 to be edited, got: $(cat "$WORK/calls.txt")"
+          [ "$(payload /comments/950)" = "$REPLY" ] || fail "Expected 950 to stay a reply, got: $(payload /comments/950)"
+          [ "$(payload /comments/952)" = "$(printf '%s\n%s' '<!-- scan-ballerina:suppression:bal-scan:ballerina:3 -->' 'This finding is no longer suppressed, as of 0123456.')" ] \
+            || fail "Expected 952 to say it is no longer suppressed, got: $(payload /comments/952)"
 
           # A newer push: its own run comments.
           echo '{"head": {"sha": "fedcba9876543210"}}' > "$WORK/pr.json"

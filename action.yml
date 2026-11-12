@@ -67,7 +67,7 @@ inputs:
     required: false
     default: 'true'
   pr-comment:
-    description: 'In pull_request and pull_request_target runs, comment each suppressed finding on a line the pull request adds, at that line, with the finding''s message and the suppression''s reason. Needs the pull-requests: write permission. Skipped in runs for pull requests from forks and Dependabot, whose token cannot comment.'
+    description: 'In pull_request and pull_request_target runs, comment the suppression''s reason of each suppressed finding on a line the pull request adds: as a reply to code scanning''s comment on its alert, waiting up to 2 minutes for it, or else as a comment of its own at that line with the finding''s message. Needs the pull-requests: write permission. Skipped in runs for pull requests from forks and Dependabot, whose token cannot comment.'
     required: false
     default: 'true'
   platform-config:
@@ -435,6 +435,7 @@ runs:
       env:
         SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
+        CODE_SCANNING: ${{ steps.upload.outcome == 'success' }}
         CATEGORY: ${{ inputs.category }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/pr-comment.sh"
 
