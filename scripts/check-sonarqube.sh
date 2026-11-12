@@ -123,7 +123,7 @@ while IFS= read -r unit; do
     # The SonarQube scan of a workspace member without a Scan.toml starts from the workspace's.
     ws_toml="$(jq -r '."workspace-scan-toml" // ""' <<< "$info")"
     if [ -n "$ws_toml" ] && ! sonarqube_entry_replaceable "$ws_toml"; then
-      error "Package '$pkg': the [[platform]] entries in the workspace Scan.toml '$ws_toml', which the SonarQube scan of this member starts from, are in a form the action cannot change. Write each entry as a [[platform]] table, not an array of inline tables, with name = \"...\" on its own line and without a multi-line string that holds a line starting with '['."
+      error "Package '$pkg': the SonarQube scan of this member adds a [[platform]] entry to a copy of the workspace Scan.toml '$ws_toml', which is in a form the action cannot extend. Remove its platform entries, which bal scan ignores in a workspace Scan.toml, and any multi-line string that holds a line starting with '['."
       continue
     fi
   fi

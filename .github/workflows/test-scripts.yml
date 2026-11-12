@@ -332,23 +332,52 @@ jobs:
           git -C "$REPO" init -q
           git -C "$REPO" config user.email test@example.test
           git -C "$REPO" config user.name test
+          git -C "$REPO" checkout -qb main
           printf '%s\n' 'import ballerina/jwt;' '' '@scan:Suppress {rules: ["ballerina/jwt:5"], reason: "Accepted"}' \
-            'function a() {}' '' '@scan:Suppress {rules: ["ballerina/jwt:1"]}' 'function b() {}' > "$REPO/auth.bal"
+            'function a() {}' '' '@scan:Suppress {rules: ["ballerina/jwt:1"]}' 'function b() {}' \
+            '@scan:Suppress {rules: ["x:1"]}' 'function c() {}' '@scan:Suppress {rules: ["x:1"]}' 'function d() {}' \
+            '@scan:Suppress {rules: ["x:1"]}' 'function e() {}' \
+            '@scan:Suppress {' '    rules: ["y:1"],' '    reason: "Several lines"' '}' 'function f() {}' \
+            '@scan:Suppress {rules: ["z:1"], reason: "Old"}' 'function g() {}' > "$REPO/auth.bal"
+          printf '%s\n' '@scan:Suppress {rules: ["v:1"]}' 'function h() {}' > "$REPO/other.bal"
           git -C "$REPO" add -A && git -C "$REPO" commit -qm base
           BASE="$(git -C "$REPO" rev-parse HEAD)"
-          # Removes the first annotation and moves the second below its function, unchanged.
+          # Removes the jwt:5 annotation, moves the jwt:1 one, removes two of the three identical x:1
+          # ones, changes the rules of the multi-line one, and changes only the reason of the z:1 one.
+          git -C "$REPO" checkout -qb pr
           printf '%s\n' 'import ballerina/jwt;' '' 'function a() {}' '' 'function b() {}' \
-            '@scan:Suppress {rules: ["ballerina/jwt:1"]}' > "$REPO/auth.bal"
+            '@scan:Suppress {rules: ["ballerina/jwt:1"]}' 'function c() {}' 'function d() {}' \
+            '@scan:Suppress {rules: ["x:1"]}' 'function e() {}' \
+            '@scan:Suppress {' '    rules: ["w:1"],' '    reason: "Several lines"' '}' 'function f() {}' \
+            '@scan:Suppress {rules: ["z:1"], reason: "New"}' 'function g() {}' > "$REPO/auth.bal"
           git -C "$REPO" commit -qam head
+          # The base branch removes an annotation after BASE, which the pull request must not be blamed
+          # for, and GitHub checks out the merge commit.
+          git -C "$REPO" checkout -q main
+          printf '%s\n' 'function h() {}' > "$REPO/other.bal"
+          git -C "$REPO" commit -qam "base moves on"
+          git -C "$REPO" merge -q --no-ff pr -m merge
           jq -n --arg sha "$BASE" '{repository: {default_branch: "main"}, pull_request: {base: {sha: $sha}}}' > "$WORK/event.json"
-          SCAN_WORK_DIR="$WORK" GITHUB_EVENT_PATH="$WORK/event.json" GITHUB_WORKSPACE="$REPO" CATEGORY=bal-scan \
-            bash scripts/removed-suppressions.sh > "$WORK/log.txt"
-          out="$(grep '^::warning' "$WORK/log.txt" || true)"
-          [ "$(grep -c . <<< "$out")" -eq 1 ] || fail "Expected one warning, got: $out"
-          [[ "$out" == "::warning file=auth.bal,line=3,"*'removes @scan:Suppress {rules: ["ballerina/jwt:5"]'* ]] \
-            || fail "Expected a warning for the jwt:5 annotation at line 3, got: $out"
-          [ "$(jq -c . "$WORK/alerts.json")" = '{"removed":1,"branch":"main"}' ] \
-            || fail "Unexpected alerts.json $(cat "$WORK/alerts.json")"
+          # Usage: check_removed NAME, on the commit checked out in $REPO.
+          check_removed() {
+            SCAN_WORK_DIR="$WORK" GITHUB_EVENT_PATH="$WORK/event.json" GITHUB_WORKSPACE="$REPO" CATEGORY=bal-scan \
+              bash scripts/removed-suppressions.sh > "$WORK/log.txt"
+            out="$(grep '^::warning' "$WORK/log.txt" || true)"
+            [ "$(grep -c . <<< "$out")" -eq 4 ] || fail "$1: expected four warnings, got: $out"
+            grep -q '^::warning file=auth.bal,line=3,.*removes @scan:Suppress {rules: \["ballerina/jwt:5"\]' <<< "$out" \
+              || fail "$1: expected a warning for the jwt:5 annotation at line 3, got: $out"
+            [ "$(grep -c 'removes @scan:Suppress {rules: \["x:1"\]}' <<< "$out")" -eq 2 ] \
+              || fail "$1: expected two warnings for the x:1 annotations, got: $out"
+            grep -q 'removes @scan:Suppress {rules: \["y:1"\]}' <<< "$out" \
+              || fail "$1: expected a warning for the y:1 rules, got: $out"
+            ! grep -q 'other.bal\|z:1\|jwt:1' <<< "$out" || fail "$1: unexpected warning in: $out"
+            [ "$(jq -c . "$WORK/alerts.json")" = '{"removed":4,"branch":"main"}' ] \
+              || fail "$1: unexpected alerts.json $(cat "$WORK/alerts.json")"
+          }
+          check_removed merge
+          # A checkout of the pull request's head is compared from where it branched off.
+          git -C "$REPO" checkout -q pr
+          check_removed head
           # With suppressions off, removing an annotation changes nothing.
           SCAN_WORK_DIR="$WORK" GITHUB_EVENT_PATH="$WORK/event.json" GITHUB_WORKSPACE="$REPO" SUPPRESSIONS=false \
             bash scripts/removed-suppressions.sh > "$WORK/log.txt"
@@ -446,7 +475,7 @@ jobs:
             grep -qx save-cache=false "$WORK/save-$event.txt" || fail "$event must not save the SonarScanner cache"
           done
 
-      # Unsupported or unselected platforms only warn. A selected platform whose settings are missing
+      # Unsupported platforms fail the step and unselected ones only warn. A selected platform whose settings are missing
       # or do not follow its schema fails the step.
       - name: Check the platforms and platform-config validation
         shell: bash
@@ -472,8 +501,8 @@ jobs:
             fi
             echo "$1: checked"
           }
-          check unknown-platform 'github-code-scanning, foo' '' pass warning "platforms has 'foo', which is not a supported platform"
-          check unknown-config-key github-code-scanning $'foo:\n  a: 1' pass warning "platform-config has settings for 'foo', which is not a supported platform"
+          check unknown-platform 'github-code-scanning, foo' '' fail error "platforms has 'foo', which is not a supported platform"
+          check unknown-config-key github-code-scanning $'foo:\n  a: 1' fail error "platform-config has settings for 'foo', which is not a supported platform"
           check unselected-sonarqube github-code-scanning $'sonarqube:\n  tokn: x' pass warning "platform-config has settings for 'sonarqube', which is not in platforms"
           check unselected-gcs sonarqube $'github-code-scanning:\n  a: 1\n'"$SONAR_OK" pass warning "platform-config has settings for 'github-code-scanning', which is not in platforms"
           check gcs-empty github-code-scanning 'github-code-scanning: {}' pass
@@ -545,7 +574,7 @@ jobs:
           fail() { echo "::error::$1"; exit 1; }
           source scripts/lib.sh
           # Usage: setup NAME; creates a work directory and a cache with a read plugin (used), an
-          # unread plugin (old), and an unread JRE archive (jre).
+          # unread plugin (old) and its unzipped copy, and an unread JRE archive (jre).
           setup() {
             WORK="$RUNNER_TEMP/prune-$1"
             HOME_DIR="$WORK/home"
@@ -553,7 +582,8 @@ jobs:
             echo a > "$HOME_DIR/cache/used/used.jar"
             echo b > "$HOME_DIR/cache/old/old.jar"
             echo c > "$HOME_DIR/cache/jre/jre.tar.gz"
-            touch -d '2 days ago' "$HOME_DIR"/cache/*/*
+            echo d > "$HOME_DIR/cache/_unzip/old.jar_unzip/plugin.class"
+            touch -d '2 days ago' "$HOME_DIR"/cache/*/* "$HOME_DIR/cache/_unzip/old.jar_unzip/plugin.class"
             : > "$WORK/sonarqube-failures.txt"
             jq -n --arg home "$HOME_DIR" '[{slot: 1, url: "https://sonar.example.com", home: $home, prefix: "test-"}]' \
               > "$WORK/sonar-caches.json"
@@ -582,6 +612,13 @@ jobs:
           cat "$HOME_DIR/cache/used/used.jar" > /dev/null
           run false
           [ -e "$HOME_DIR/cache/old" ] || fail "Nothing must be dropped after a failed scan"
+
+          # An earlier use of the action in the job unzipped the plugin, so the scan loaded it from
+          # the copy without reading the JAR.
+          setup unzipped
+          cat "$HOME_DIR/cache/used/used.jar" "$HOME_DIR/cache/_unzip/old.jar_unzip/plugin.class" > /dev/null
+          run true
+          [ -e "$HOME_DIR/cache/old" ] || fail "A plugin loaded from its unzipped copy must be kept"
 
       # Each server has its own SONAR_USER_HOME and cache key, so a job that shares one server with
       # another job shares its cache, whatever other servers either uses.

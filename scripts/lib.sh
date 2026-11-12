@@ -15,6 +15,9 @@ SCAN_TOOL_LINES="\
 0.11.1 0.12.0 2201.12.0
 0.13.0 - 2201.13.0
 "
+# The lines as an array, read once: version_ge's here-strings break a here-string loop in a command
+# substitution. read -a, since mapfile is missing from the bash 3.2 of macOS runners.
+IFS=$'\n' read -r -d '' -a SCAN_TOOL_ROWS <<< "$SCAN_TOOL_LINES" || true
 
 # The oldest supported scan tool and the oldest Ballerina that runs it, and the same for the newest line.
 read -r MIN_TOOL_VERSION _ MIN_BALLERINA_VERSION <<< "$SCAN_TOOL_LINES"
@@ -23,11 +26,8 @@ SUPPORTED_TOOL_VERSIONS="bal scan $MIN_TOOL_VERSION or later of 0.11.x, for Ball
 
 # Succeeds when the action supports scan tool version $1.
 tool_supported() {
-  local first below _ rows row
-  # Read up front: version_ge's here-strings break a here-string loop in a command substitution.
-  # read -a, since mapfile is missing from the bash 3.2 of macOS runners.
-  IFS=$'\n' read -r -d '' -a rows <<< "$SCAN_TOOL_LINES" || true
-  for row in "${rows[@]}"; do
+  local first below _ row
+  for row in "${SCAN_TOOL_ROWS[@]}"; do
     [ -n "$row" ] || continue
     read -r first below _ <<< "$row"
     # The upper bound ignores a pre-release suffix, so 0.12.0-rc1 belongs to the 0.12 line.
@@ -141,11 +141,8 @@ fetch_tool_min_ballerina() {
 
 # Prints the oldest Ballerina of the supported scan tool line that version $1 belongs to.
 known_tool_min_ballerina() {
-  local row needed="$MIN_BALLERINA_VERSION" rows first
-  # Read up front: version_ge's here-strings break a here-string loop in a command substitution.
-  # read -a, since mapfile is missing from the bash 3.2 of macOS runners.
-  IFS=$'\n' read -r -d '' -a rows <<< "$SCAN_TOOL_LINES" || true
-  for row in "${rows[@]}"; do
+  local row needed="$MIN_BALLERINA_VERSION" first
+  for row in "${SCAN_TOOL_ROWS[@]}"; do
     [ -n "$row" ] || continue
     read -r first _ <<< "$row"
     if version_ge "$1" "$first"; then
@@ -258,11 +255,13 @@ sonar_user_home() {
 # has restore, save and check steps for each of these slots.
 SONAR_CACHE_SLOTS=3
 
-# Sets the access time of each file in SonarScanner cache folder $1 to 1970, then creates marker
-# file $2, so that sonar-cache.sh can tell the files the scan read by an access time newer than it.
+# Sets the access time of each file in SonarScanner cache folder $1, and in the plugins it unzipped,
+# to 1970, then creates marker file $2, so that sonar-cache.sh can tell the files the scan read by an
+# access time newer than it.
 mark_sonar_cache() {
   [ -d "$1" ] || return 0
   find "$1" -mindepth 2 -maxdepth 2 -type f ! -path "$1/_*" -exec touch -a -t 197001020000 {} + 2> /dev/null || return 0
+  [ ! -d "$1/_unzip" ] || find "$1/_unzip" -type f -exec touch -a -t 197001020000 {} + 2> /dev/null || true
   touch "$2"
 }
 sonar_scanner_sha256() {
@@ -320,6 +319,15 @@ escape_property() {
 log_error() { echo "::error title=bal scan ($(escape_property "${CATEGORY:-bal-scan}"))::$(escape_data "$1")"; }
 log_warning() { echo "::warning title=bal scan ($(escape_property "${CATEGORY:-bal-scan}"))::$(escape_data "$1")"; }
 log_notice() { echo "::notice title=bal scan ($(escape_property "${CATEGORY:-bal-scan}"))::$(escape_data "$1")"; }
+
+# Prints warning $3 at line $2 of file $1. GitHub shows at most 10 warnings per step, so later ones
+# are left out.
+FILE_WARNINGS=0
+log_file_warning() {
+  FILE_WARNINGS=$((FILE_WARNINGS + 1))
+  [ "$FILE_WARNINGS" -le 10 ] || return 0
+  echo "::warning file=$(escape_property "$1"),line=$2,title=$(escape_property "bal scan ($(trim "${CATEGORY:-bal-scan}"))")::$(escape_data "$3")"
+}
 
 die() {
   log_error "$1"
@@ -571,14 +579,18 @@ scan_config_info() {
     '{path: $path, table: $table, config: $config, url: $url, "scan-toml": $file}'
 }
 
+# Succeeds when Ballerina.toml $1 has a [workspace] table, with LF or CRLF line endings.
+is_workspace_toml() {
+  [ -f "$1" ] && grep -Eq '^[[:space:]]*\[workspace\][[:space:]]*(#.*)?'$'\r''?$' "$1"
+}
+
 # Prints the directory of the workspace whose Ballerina.toml lists package $1, both relative to the
 # repository root, or fails when there is none.
 enclosing_workspace() {
   local dir="$1"
   while [ "$dir" != "." ] && [ "$dir" != "/" ]; do
     dir="$(dirname "$dir")"
-    [ -f "$dir/Ballerina.toml" ] \
-      && grep -Eq '^[[:space:]]*\[workspace\][[:space:]]*(#.*)?'$'\r''?$' "$dir/Ballerina.toml" \
+    is_workspace_toml "$dir/Ballerina.toml" \
       && yq -p toml -o json -I0 '.workspace.packages // []' "$dir/Ballerina.toml" 2> /dev/null \
         | jq -e -L "$(dirname "${BASH_SOURCE[0]}")" --arg ws "$dir" --arg p "$1" 'include "common";
             any(.[]; join_path($ws; tostring | sub("^\\./"; "") | sub("/+$"; "")) == $p)' > /dev/null \

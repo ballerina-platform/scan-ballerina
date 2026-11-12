@@ -247,14 +247,15 @@ runs:
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/install-sonarqube.sh"
 
     # Saved before the scan, so that a failing scan does not keep it from being saved. Also saved
-    # when the restored zip failed its checksum, so that the newer entry replaces the bad one.
+    # when the restored zip failed its checksum, so that the newer entry replaces the bad one. The
+    # run-key is unique in the run, so matrix jobs saving at once do not collide on the key.
     - name: Save SonarScanner to the Actions cache
-      if: steps.sonarqube-tools.outcome == 'success' && steps.restore-scanner.outcome == 'success' && (steps.restore-scanner.outputs.cache-matched-key == '' || steps.sonarqube-tools.outputs.scanner-zip-replaced == 'true')
+      if: steps.sonarqube-tools.outcome == 'success' && steps.restore-scanner.outcome == 'success' && (steps.restore-scanner.outputs.cache-matched-key == '' || steps.sonarqube-tools.outputs.scanner-zip-replaced == 'true') && steps.validate.outputs.save-cache == 'true'
       continue-on-error: true
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.sonarqube.outputs.scanner-zip }}
-        key: ${{ steps.sonarqube.outputs.scanner-key }}-${{ github.run_id }}-${{ github.run_attempt }}
+        key: ${{ steps.sonarqube.outputs.scanner-key }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.validate.outputs.run-key }}
 
     - name: Scan packages
       id: scan
@@ -283,6 +284,7 @@ runs:
       env:
         SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
         SCAN_SUCCEEDED: ${{ steps.scan.outcome == 'success' }}
+        SAVE_CACHE: ${{ steps.validate.outputs.save-cache }}
         RESTORED_KEY_1: ${{ steps.restore-sonar-cache-1.outputs.cache-matched-key }}
         RESTORED_KEY_2: ${{ steps.restore-sonar-cache-2.outputs.cache-matched-key }}
         RESTORED_KEY_3: ${{ steps.restore-sonar-cache-3.outputs.cache-matched-key }}
@@ -399,6 +401,7 @@ runs:
         GITHUB_TOKEN: ${{ inputs.github-token }}
         DEFAULT_BRANCH: ${{ steps.validate.outputs.default-branch }}
         SARIF_ID: ${{ steps.upload.outputs.sarif-id }}
+        SUPPRESSED_COUNT: ${{ steps.merge.outputs.suppressed-count }}
         CATEGORY: ${{ inputs.category }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/dismiss-alerts.sh"
 

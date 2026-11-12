@@ -4,8 +4,9 @@
 # SONAR_USER_HOME, listed in $SCAN_WORK_DIR/sonar-caches.json by check-sonarqube.sh, and action.yml
 # saves the one in slot N with the key-N output.
 #
-# Inputs (environment): SCAN_WORK_DIR, CATEGORY, and either SCAN_SUCCEEDED and RESTORED_KEY_N (the
-# key action.yml restored for slot N, empty when none), or RECORD=true and SAVED_KEY_N (the key
+# Inputs (environment): SCAN_WORK_DIR, CATEGORY, and either SCAN_SUCCEEDED, SAVE_CACHE (false when
+# the event saves no cache) and RESTORED_KEY_N (the key action.yml restored for slot N, empty when
+# none), or RECORD=true and SAVED_KEY_N (the key
 # saved for slot N, empty when it was not saved) after the saves.
 # Writes: <home>/cache-key, the key the Actions cache holds for the server, read by later uses in
 # the job.
@@ -32,6 +33,11 @@ prune_unused() {
     name="$(basename "$dir")"
     [ "${name#_}" = "$name" ] || continue
     if [ -n "$(find "$dir" -maxdepth 1 -type f -anewer "$start" ! -newer "$start" | head -n 1)" ]; then
+      read_restored=true
+    elif [ -n "$(for jar in "$dir"/*.jar; do
+      [ ! -e "$jar" ] || find "$cache/_unzip/$(basename "$jar")_unzip" -type f -anewer "$start" 2> /dev/null
+    done | head -n 1)" ]; then
+      # Loaded from the unzipped copy an earlier use of the action in the job made, without reading the JAR.
       read_restored=true
     elif [ -z "$(find "$dir" -maxdepth 1 -type f -anewer "$start" | head -n 1)" ] \
       && [ -z "$(find "$dir" -maxdepth 1 -type f ! -name '*.jar' | head -n 1)" ]; then
@@ -72,7 +78,8 @@ key_cache() {
   else
     echo "The SonarScanner cache of $url changed, so it is saved as $key"
     # The unzipped and temporary copies are not in the key, and SonarScanner extracts them again.
-    rm -rf "$cache"/_*
+    # A cache that is not saved keeps them for later uses of the action in the job.
+    [ "${SAVE_CACHE:-true}" != true ] || rm -rf "$cache"/_*
     set_output "save-$slot" true
   fi
 }

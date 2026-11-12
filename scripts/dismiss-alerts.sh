@@ -16,7 +16,8 @@
 # just uploaded. It first waits until code scanning has processed the upload, so that they are current.
 #
 # Inputs (environment): SCAN_WORK_DIR, GITHUB_TOKEN, GITHUB_REPOSITORY, GITHUB_REF, GITHUB_API_URL,
-# GITHUB_SHA, GITHUB_EVENT_PATH, DEFAULT_BRANCH, SARIF_ID, CATEGORY.
+# GITHUB_SHA, GITHUB_WORKSPACE, GITHUB_EVENT_PATH, DEFAULT_BRANCH, SARIF_ID, SUPPRESSED_COUNT (the
+# suppressed-count output of merge-sarif.sh), CATEGORY.
 # Reads: $SCAN_WORK_DIR/results.json and $SCAN_WORK_DIR/merged.sarif, written by merge-sarif.sh.
 # Writes: $SCAN_WORK_DIR/alerts.json, with the number of alerts dismissed, recorded (taken over or
 # given a changed justification), reopened, fixed and failed to change, left-open (the suppressed
@@ -99,11 +100,15 @@ list_alerts() {
   done
 }
 
-# Only on the default branch is GITHUB_SHA the commit of the upload, which tells the alerts this
-# analysis reported.
+# The commit upload-sarif records: the checkout's HEAD, which a run can set to another commit than
+# GITHUB_SHA.
+UPLOAD_SHA="$(git -C "$(workspace_root)" rev-parse HEAD 2> /dev/null || true)"
+UPLOAD_SHA="${UPLOAD_SHA:-${GITHUB_SHA:-}}"
+
+# Only on the default branch does the commit of the upload tell the alerts this analysis reported.
 alert_changes() {
   local sha=""
-  [ "$1" != change ] || sha="${GITHUB_SHA:-}"
+  [ "$1" != change ] || sha="$UPLOAD_SHA"
   jq -sc -f "$SCRIPT_DIR/alert-changes.jq" --slurpfile results "$WORK/results.json" \
     --arg category "$(trim "${CATEGORY:-bal-scan}")" --arg marker "$MARKER" --arg reason "$REASON" \
     --argjson limit "$COMMENT_LIMIT" --arg sha "$sha" --arg mode "$1" "$2"
@@ -135,10 +140,8 @@ if [ "${DEFAULT_BRANCH:-false}" != true ]; then
     echo "Could not list the code scanning alerts of $REF, so removed suppressions are not checked."
     exit 0
   fi
-  TITLE="bal scan ($(trim "${CATEGORY:-bal-scan}"))"
   UNSUPPRESSED=0
   REINTRODUCED=0
-  WARNINGS=0
   while IFS= read -r item; do
     [ -n "$item" ] || continue
     # A unit separator keeps empty fields, which a tab, as whitespace, would merge.
@@ -164,10 +167,7 @@ if [ "${DEFAULT_BRANCH:-false}" != true ]; then
         message="This $rule finding is not on $BRANCH, but code scanning matches it to alert #$number, dismissed by hand as $reason, so it is not shown as new, and the alert stays dismissed after the merge. Reopen it if the dismissal no longer applies: $url"
       fi
     fi
-    WARNINGS=$((WARNINGS + 1))
-    # GitHub shows at most 10 warnings per step.
-    [ "$WARNINGS" -le 10 ] || continue
-    echo "::warning file=$(escape_property "$file"),line=$line,title=$(escape_property "$TITLE")::$(escape_data "$message")"
+    log_file_warning "$file" "$line" "$message"
   done < <(alert_changes unsuppressed "$ALERTS")
   echo "Findings whose suppression was removed: $UNSUPPRESSED. Findings new to $BRANCH whose alerts are dismissed: $REINTRODUCED."
   jq -n --argjson u "$UNSUPPRESSED" --argjson r "$REINTRODUCED" --arg branch "$BRANCH" \
@@ -175,8 +175,8 @@ if [ "${DEFAULT_BRANCH:-false}" != true ]; then
   exit 0
 fi
 
-# Counted as the job summary counts suppressed findings, without those of severity none.
-SUPPRESSED="$(jq '[.[] | select(.suppressed and .severity != "none")] | length' "$WORK/results.json")"
+# merge-sarif.sh's count, which the job summary shows too: without findings of severity none.
+SUPPRESSED="${SUPPRESSED_COUNT:-0}"
 STATES=(dismissed)
 # Open alerts are only dismissed, so they are listed only when a finding is suppressed.
 jq -e 'any(.[]; .suppressed)' "$WORK/results.json" > /dev/null && STATES=(open dismissed)
@@ -195,20 +195,29 @@ done
 # One line per alert: number, kind and the patches as JSON, which has no raw tab or newline.
 CHANGES="$(alert_changes change "$ALERTS" | jq -r '"\(.number)\t\(.kind)\t\(.patches | tojson)"')"
 
-declare -A DONE=([dismiss]=0 [record]=0 [reopen]=0 [fix]=0)
-FAILED=0
+# Plain counters, since the bash 3.2 of macOS runners has no associative arrays.
+DISMISSED=0 RECORDED=0 REOPENED=0 FIXED=0 FAILED=0
 while IFS=$'\t' read -r number kind patches; do
   [ -n "$number" ] || continue
   ok=true
   while IFS= read -r patch; do
     gh_api -X PATCH "$API/$number" -d "$patch" > /dev/null || { ok=false && break; }
   done < <(jq -c '.[]' <<< "$patches")
-  if [ "$ok" = true ]; then DONE[$kind]=$((DONE[$kind] + 1)); else FAILED=$((FAILED + 1)); fi
+  if [ "$ok" != true ]; then
+    FAILED=$((FAILED + 1))
+    continue
+  fi
+  case "$kind" in
+    dismiss) DISMISSED=$((DISMISSED + 1)) ;;
+    record) RECORDED=$((RECORDED + 1)) ;;
+    reopen) REOPENED=$((REOPENED + 1)) ;;
+    fix) FIXED=$((FIXED + 1)) ;;
+  esac
 done <<< "$CHANGES"
 
 [ "$FAILED" -eq 0 ] \
   || log_warning "Could not change $FAILED code scanning alert(s) of suppressed findings. The token needs the security-events: write permission."
-echo "Code scanning alerts of suppressed findings: dismissed ${DONE[dismiss]}, recorded ${DONE[record]}, reopened ${DONE[reopen]}, set to fixed ${DONE[fix]}."
-jq -n --argjson d "${DONE[dismiss]}" --argjson c "${DONE[record]}" --argjson r "${DONE[reopen]}" \
-  --argjson x "${DONE[fix]}" --argjson f "$FAILED" \
+echo "Code scanning alerts of suppressed findings: dismissed $DISMISSED, recorded $RECORDED, reopened $REOPENED, set to fixed $FIXED."
+jq -n --argjson d "$DISMISSED" --argjson c "$RECORDED" --argjson r "$REOPENED" \
+  --argjson x "$FIXED" --argjson f "$FAILED" \
   '{dismissed: $d, recorded: $c, reopened: $r, fixed: $x, failed: $f, "left-open": 0}' > "$WORK/alerts.json"

@@ -38,7 +38,7 @@ UNITS='[]'
 if [ "${#FOUND[@]}" -gt 0 ]; then
   # One unit per line, collected into the list by a single jq call.
   UNITS="$(while IFS= read -r dir; do
-    if grep -Eq '^[[:space:]]*\[workspace\][[:space:]]*(#.*)?$' "$dir/Ballerina.toml"; then
+    if is_workspace_toml "$dir/Ballerina.toml"; then
       MEMBERS="$(yq -p toml -o json -I0 '.workspace.packages // []' "$dir/Ballerina.toml" 2> /dev/null || echo '[]')"
       jq -nc --arg path "$dir" --argjson members "$MEMBERS" \
         '{path: $path, kind: "workspace", members: [$members[] | tostring | sub("^\\./"; "") | sub("/+$"; "")]}'
@@ -118,13 +118,20 @@ INFOS="$(while IFS= read -r pkg; do
 done < <(jq -r -L "$SCRIPT_DIR" 'include "common";
   .[] | if .kind == "workspace" then .path as $ws | .members[] | join_path($ws; .) else .path end' <<< "$UNITS") \
   | jq -sc '.')"
+# The workspace of each member of a workspace unit, so only packages scanned on their own need
+# enclosing_workspace to walk up their ancestors.
+MEMBER_WS="$(jq -c -L "$SCRIPT_DIR" 'include "common";
+  [.[] | select(.kind == "workspace") | .path as $ws | .members[] | {key: join_path($ws; .), value: $ws}]
+  | from_entries' <<< "$UNITS")"
 while IFS= read -r info; do
   problem="$(scan_config_problem "$info")"
   [ -z "$problem" ] || PROBLEMS+=("$problem")
   read_scan_config "$info"
   # bal scan reads the workspace Scan.toml for a member without its own. The SonarQube scan writes
   # one for such a member, so it starts from the workspace's to keep its settings.
-  if [ -z "$SCAN_TOML" ] && ws="$(enclosing_workspace "$SCAN_PKG")"; then
+  [ -n "$SCAN_TOML" ] && continue
+  ws="$(jq -r --arg p "$SCAN_PKG" '.[$p] // ""' <<< "$MEMBER_WS")"
+  if [ -n "$ws" ] || ws="$(enclosing_workspace "$SCAN_PKG")"; then
     if ! jq -e --arg w "$ws" 'has($w)' <<< "$WS_INFOS" > /dev/null; then
       ws_info="$(scan_config_info "$ws")"
       problem="$(scan_config_problem "$ws_info")"

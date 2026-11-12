@@ -8,7 +8,7 @@
 # JSON).
 # Outputs: work-dir, github-code-scanning, restricted, default-branch, update-alerts (true when
 # dismiss-alerts.sh runs after the upload), save-cache, sonarqube, sonarqube-skipped, artifacts
-# (true or false), artifact-name.
+# (true or false), artifact-name, run-key.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -45,7 +45,7 @@ while IFS= read -r p; do
   if one_of "$p" "${KNOWN_PLATFORMS[@]}"; then
     one_of "$p" "${SELECTED[@]+"${SELECTED[@]}"}" || SELECTED+=("$p")
   else
-    log_warning "platforms has '$p', which is not a supported platform. It is ignored. Supported platforms: ${KNOWN_PLATFORMS[*]}."
+    error "platforms has '$p', which is not a supported platform. Supported platforms: ${KNOWN_PLATFORMS[*]}."
   fi
 done < <(split_list "${PLATFORMS:-}")
 selected() { one_of "$1" "${SELECTED[@]+"${SELECTED[@]}"}"; }
@@ -117,7 +117,7 @@ fi
 
 while IFS= read -r p; do
   if ! one_of "$p" "${KNOWN_PLATFORMS[@]}"; then
-    log_warning "platform-config has settings for '$p', which is not a supported platform. They are ignored. Supported platforms: ${KNOWN_PLATFORMS[*]}."
+    error "platform-config has settings for '$p', which is not a supported platform. Supported platforms: ${KNOWN_PLATFORMS[*]}."
   elif ! selected "$p"; then
     log_warning "platform-config has settings for '$p', which is not in platforms. They are ignored."
   fi
@@ -233,7 +233,12 @@ esac
 
 SONARQUBE=false
 if selected sonarqube && jq -e '.sonarqube == null' <<< "$CONFIG" > /dev/null; then
-  error "sonarqube is in platforms, but platform-config has no settings for it. Add a 'sonarqube:' mapping with at least a token."
+  # A platform-config passed whole from a secret is empty in a restricted run.
+  if [ "$RESTRICTED" = true ]; then
+    log_warning "Skipping sonarqube: pull requests from forks get no secrets and Dependabot runs get only Dependabot secrets, so platform-config has no settings for it. The SARIF file is still produced."
+  else
+    error "sonarqube is in platforms, but platform-config has no settings for it. Add a 'sonarqube:' mapping with at least a token."
+  fi
 elif selected sonarqube; then
   while IFS= read -r e; do [ -n "$e" ] && error "$e"; done < <(sonarqube_schema_errors)
   # Each plugin-version, at the platform level and under packages. latest and malformed versions
@@ -296,5 +301,7 @@ set_output sonarqube "$SONARQUBE"
 set_output sonarqube-skipped "$(selected sonarqube && [ "$SONARQUBE" = false ] && echo true || echo false)"
 set_output artifacts "$ARTIFACTS"
 set_output artifact-name "$ARTIFACT_NAME"
+# Unique in the run like the artifact name, but safe in a cache key, which takes no comma.
+set_output run-key "$(printf '%s' "$ARTIFACT_NAME" | sha256_of /dev/stdin | cut -c1-12)"
 echo "Platforms: ${SELECTED[*]:-none (SARIF file only)}"
 [ "$ARTIFACTS" = false ] || echo "Artifact: '$ARTIFACT_NAME', with the merged SARIF file"

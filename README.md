@@ -178,7 +178,7 @@ The action's last inner step runs even when an earlier one failed, so `result` i
 | --- | --- | --- |
 | `ballerina-version` | compatible | Ballerina version to install, `2201.12.0` or later, and `2201.13.0` or later for `bal scan` `0.13.0` and later, or `latest` for the latest release. Empty uses the Ballerina already on the path if it can run the scan tool (the version `tool-version` needs, or `2201.13.0` or later when `tool-version` is empty), and installs the latest Ballerina otherwise. A version, or `latest`, is installed unless it is the one on the path. Pin a version for reproducible runs. See [Versions](#versions). |
 | `tool-version` | latest compatible | `bal scan` tool version: `0.11.1` or later of `0.11.x`, for Ballerina `2201.12.x`, or `0.13.0` or later, or `latest` for the latest release. `0.12.x` is not supported. Empty uses the latest version compatible with the Ballerina version. A version, or `latest`, that does not support the Ballerina version fails the step. See [Scan tool 0.11](#scan-tool-011) for what `0.11.x` does not support. |
-| `platforms` | empty | Comma separated platforms to send the findings to: `github-code-scanning`, `sonarqube`. Any other name gets a warning and is ignored. Empty produces the SARIF file only. |
+| `platforms` | empty | Comma separated platforms to send the findings to: `github-code-scanning`, `sonarqube`. Any other name fails the step. Empty produces the SARIF file only. |
 | `paths` | `.` | Newline or comma separated paths to scan. Every package and workspace in these paths, including their subdirectories, is scanned, and their findings are merged into one SARIF file. A path that does not exist fails the step. |
 | `exclude-paths` | empty | Newline or comma separated globs, relative to the repository root, for packages and files to leave out. A directory excludes everything below it. `*` stays within one directory and `**` crosses directories. |
 | `exclude-tests` | `true` | Leave the test sources, in `tests/` and `modules/*/tests/`, out of the scan with `bal scan --exclude-tests`, so their findings and suppressions reach no platform, SonarQube included. `false` scans them. Overrides `[analysis] excludeTests` in `Scan.toml`, and `bal scan` warns when the two differ. |
@@ -196,7 +196,7 @@ The action's last inner step runs even when an earlier one failed, so `result` i
 
 ## Platform configuration
 
-`platform-config` holds the settings of every selected platform. Each top-level key is a platform, and its value is that platform's settings. A key for a platform that is not supported, or not in `platforms`, gets a warning and is ignored. A selected platform's settings must follow its schema, or the step fails, so a typo such as `tokn` is caught. `sonarqube` needs a `sonarqube:` key.
+`platform-config` holds the settings of every selected platform. Each top-level key is a platform, and its value is that platform's settings. A key for a platform that is not supported fails the step, and a key for a platform not in `platforms` gets a warning and is ignored. A selected platform's settings must follow its schema, or the step fails, so a typo such as `tokn` is caught. `sonarqube` needs a `sonarqube:` key.
 
 ```yaml
 platform-config: |
