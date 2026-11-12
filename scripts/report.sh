@@ -184,7 +184,7 @@ if [ "$(trim "${JOB_SUMMARY:-true}")" = "true" ] && [ -n "${GITHUB_STEP_SUMMARY:
         jq -r '
           select((.added // []) + (.removed // []) | length > 0)
           | "**This pull request adds \(.added | length) and removes \(.removed | length) `@scan:Suppress` annotation(s).** "
-            + "Added ones take their findings out of the counts and the gate, and removed ones put them back. See the annotations of the step that checks for suppression changes.\n"
+            + "Added ones take their findings out of the counts and the gate, and removed ones put them back. See the warnings of the step that checks for suppression changes.\n"
         ' "$WORK/suppression-changes.json"
       fi
       echo "Gate: $GATE."
@@ -216,7 +216,7 @@ if [ "$(trim "${JOB_SUMMARY:-true}")" = "true" ] && [ -n "${GITHUB_STEP_SUMMARY:
           + (if $alerts.error then " **Could not finish updating the code scanning alerts of suppressed findings.** See the log of the step that updates them."
              else "" end)
           + (if ($alerts.unsuppressed // 0) > 0
-             then " **\($alerts.unsuppressed) finding(s) are no longer suppressed, but their alerts stay dismissed on \($alerts.branch) until this change is merged**, so code scanning does not show them here. See the warnings of the step that updates the alerts."
+             then " **\($alerts.unsuppressed) finding(s) are no longer suppressed, but their alerts stay dismissed on \($alerts.branch) until this change is merged**, so code scanning does not show them here. See the warnings at the removed annotations, or at the findings when no annotation was removed."
              else "" end)
           + (if ($alerts.reintroduced // 0) > 0
              then " **\($alerts.reintroduced) finding(s) are not on \($alerts.branch), but code scanning matches them to dismissed alerts**, so it does not show them as new here. See the warnings of the step that updates the alerts."

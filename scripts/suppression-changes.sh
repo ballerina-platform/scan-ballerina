@@ -3,8 +3,9 @@
 # pull request adds and removes, from the diff of its own changes, and annotates each one. Code
 # scanning shows neither when the finding is already on the base branch: a finding newly suppressed
 # keeps its open alert, and one whose suppression is removed matches its alert dismissed on the
-# default branch. An added annotation is a warning, since it takes findings out of the gate and
-# needs a reviewer's acceptance, and a removed one a notice, since its findings are counted again.
+# default branch. Each one is a warning, the only one for that change: an added annotation takes
+# findings out of the gate and needs a reviewer's acceptance, and a removed one counts them again.
+# dismiss-alerts.sh, which runs after it, does not warn again at the findings of a removed one.
 # pr-comment.sh lists both in a comment on the pull request. Annotations are matched by their
 # rules, so one that is moved or has only its reason changed is neither added nor removed. Needs no
 # token beyond reading the base repository. Every failure is a log line, so that it never fails the
@@ -121,7 +122,7 @@ while IFS=$'\t' read -r sign file line base_line text; do
     message="This pull request removes $text, so the findings it suppressed are reported again."
     [ "${CODE_SCANNING:-false}" != true ] \
       || message+=" Code scanning matches them to their alerts dismissed on $BRANCH, so it does not show them as new. The action reopens the alerts when this change is merged."
-    log_file_notice "$file" "$line" "$message"
+    log_file_warning "$file" "$line" "$message"
   fi
 done <<< "$CHANGES"
 echo "@scan:Suppress annotations added: $ADDED, removed: $REMOVED."

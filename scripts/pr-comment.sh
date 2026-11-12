@@ -5,12 +5,14 @@
 # is posted as a reply in that comment's thread, once code scanning has commented, and as a comment
 # of its own at the line when code scanning does not comment in time, or at all, such as for a
 # finding matching an alert dismissed before. A comment already there is edited rather than
-# repeated, and one whose finding is no longer suppressed says so. It also keeps one comment in the
-# pull request's conversation listing the @scan:Suppress annotations it adds and removes. Every
-# failure is a warning, so that it never fails the scan.
+# repeated, and one whose finding is no longer suppressed says so.
+# It also comments at each @scan:Suppress annotation the pull request adds or removes, as
+# suppression-changes.sh found them, whose findings are on lines the pull request does not add, so
+# already on the default branch, where code scanning shows nothing for them. A removed annotation is
+# commented on its deleted line. Every failure is a warning, so that it never fails the scan.
 #
 # Inputs (environment): SCAN_WORK_DIR, GITHUB_TOKEN, GITHUB_REPOSITORY, GITHUB_API_URL,
-# GITHUB_SERVER_URL, GITHUB_WORKSPACE, GITHUB_EVENT_PATH, CATEGORY, CODE_SCANNING (true when the
+# GITHUB_WORKSPACE, GITHUB_EVENT_PATH, CATEGORY, CODE_SCANNING (true when the
 # findings were uploaded to code scanning, so that its comments are waited for).
 # Reads: $SCAN_WORK_DIR/results.json and $SCAN_WORK_DIR/merged.sarif, written by merge-sarif.sh, and
 # $SCAN_WORK_DIR/suppression-changes.json, written by suppression-changes.sh.
@@ -59,14 +61,22 @@ get_all() {
   done
 }
 
-# Each suppressed finding with the text of its line in the checked out commit, which the diff of
-# the pull request's head is compared with, since the scan may have run on the merge commit.
+CHANGES_FILE="$WORK/suppression-changes.json"
+[ -s "$CHANGES_FILE" ] || echo '{}' > "$CHANGES_FILE"
+
+# Each suppressed finding, and each finding in a file with a suppression change, with the text of
+# its line in the checked out commit, which the diff of the pull request's head is compared with,
+# since the scan may have run on the merge commit.
 while IFS= read -r finding; do
   [ -n "$finding" ] || continue
   IFS=$'\t' read -r file line < <(jq -r '[.file, .line] | @tsv' <<< "$finding")
   text="$(sed -n "${line}p" "$ROOT/$file" 2> /dev/null | tr -d '\r' || true)"
   jq -c --arg text "$text" '. + {text: $text}' <<< "$finding"
-done < <(jq -c '.[] | select(.suppressed and .severity != "none")' "$WORK/results.json") | jq -s . > "$WORK/pr-suppressed.json"
+done < <(jq -c --slurpfile changes "$CHANGES_FILE" '
+  ([$changes[0] | (.added // [])[], (.removed // [])[] | .file] | unique) as $files
+  | .[] | select(.severity != "none" and (.suppressed or (.file as $f | any($files[]; . == $f))))' "$WORK/results.json") \
+  | jq -s . > "$WORK/pr-findings.json"
+jq 'map(select(.suppressed))' "$WORK/pr-findings.json" > "$WORK/pr-suppressed.json"
 
 if ! CURRENT="$(gh_api "$PULLS/$NUMBER" | jq -r '.head.sha // ""')" || [ -z "$CURRENT" ]; then
   log_warning "Could not read pull request #$NUMBER, so the suppressed findings were not commented."
@@ -77,59 +87,6 @@ if [ "$CURRENT" != "$HEAD_SHA" ]; then
   echo "Pull request #$NUMBER has moved on to $CURRENT, so the run for that commit comments the suppressed findings."
   exit 0
 fi
-
-# One comment in the conversation of the pull request lists the @scan:Suppress annotations it adds
-# and removes, as suppression-changes.sh found them. Later runs edit it, and none is written until
-# there is a change to list.
-post_summary() {
-  local changes="$WORK/suppression-changes.json" comments="$REPO_API/issues/$NUMBER/comments" body found
-  jq -e 'has("added")' "$changes" > /dev/null 2>&1 || return 0
-  if ! get_all "$comments" | jq -s 'add // []' > "$WORK/pr-issue-comments.json"; then
-    log_warning "Could not read the comments of pull request #$NUMBER, so the suppression changes were not listed."
-    return 0
-  fi
-  body="$(jq -r -L "$SCRIPT_DIR" --arg category "$CATEGORY_NAME" --arg short "${HEAD_SHA:0:7}" \
-    --arg server "${GITHUB_SERVER_URL:-https://github.com}" --arg repo "$GITHUB_REPOSITORY" \
-    --argjson code_scanning "$([ "${CODE_SCANNING:-false}" = true ] && echo true || echo false)" '
-    include "common";
-    # Untrusted text in a code span, which shows HTML, mentions and Markdown as they are.
-    def code: gsub("\r?\n"; " ") | gsub("`"; "'"'"'") | if length > 300 then .[0:300] + "…" else . end | "`\(.)`";
-    def item($sha; $line): "- [\("\(.file):\($line)" | code)](\($server)/\($repo)/blob/\($sha)/\(.file | uri_path)#L\($line)): \(.text | code)";
-    def list($items; f): ($items[:50] | map(f)) + (if ($items | length) > 50 then ["- …and \(($items | length) - 50) more"] else [] end);
-    . as $c
-    | ["<!-- scan-ballerina:suppression-changes:\($category) -->", "### `bal scan` suppression changes (\($category | code))", ""]
-    + if (.added | length) + (.removed | length) == 0 then
-        ["This pull request no longer adds or removes any `@scan:Suppress` annotation."]
-      else
-        (if (.added | length) > 0 then
-          ["**Added (\(.added | length))**: the findings of these rules are left out of the counts and the gate"
-            + (if $code_scanning then ", and code scanning shows no new alert for those already on \($c.branch)" else "" end)
-            + ", so each one needs a reviewer'"'"'s explicit acceptance.", ""]
-          + list(.added; item($c.head; .line))
-        else [] end)
-        + (if (.added | length) > 0 and (.removed | length) > 0 then [""] else [] end)
-        + (if (.removed | length) > 0 then
-          ["**Removed (\(.removed | length))**: the findings these suppressed are reported again"
-            + (if $code_scanning then ". Code scanning matches them to their alerts dismissed on \($c.branch), so it does not show them as new, and the action reopens the alerts when this change is merged" else "" end)
-            + ".", ""]
-          + list(.removed; item($c.base; ."base-line"))
-        else [] end)
-      end
-    + ["", "_As of \($short)._"]
-    | join("\n")' "$changes")"
-  found="$(jq -c --arg m "<!-- scan-ballerina:suppression-changes:$CATEGORY_NAME -->" \
-    'map(select((.body // "") | startswith($m))) | first // {}' "$WORK/pr-issue-comments.json")"
-  if [ "$(jq -r '.id // ""' <<< "$found")" = "" ]; then
-    jq -e '(.added | length) + (.removed | length) > 0' "$changes" > /dev/null || return 0
-    jq -n --arg body "$body" '{body: $body}' | gh_api -X POST "$comments" --data-binary @- > /dev/null \
-      || log_warning "Could not list the suppression changes on pull request #$NUMBER. The token needs the pull-requests: write permission."
-  elif [ "$(jq -r '.body' <<< "$found")" != "$body" ]; then
-    jq -n --arg body "$body" '{body: $body}' \
-      | gh_api -X PATCH "$REPO_API/issues/comments/$(jq -r '.id' <<< "$found")" --data-binary @- > /dev/null \
-      || log_warning "Could not update the list of suppression changes on pull request #$NUMBER. The token needs the pull-requests: write permission."
-  fi
-}
-post_summary
 
 load_comments() {
   get_all "$PULLS/$NUMBER/comments" | jq -s 'add // []' > "$WORK/pr-comments.json"
@@ -149,6 +106,41 @@ jq '
   (map({key: .filename, value: (.patch // "" | added)}) | from_entries) as $added
   | $suppressed[0] | map(select($added[.file][.line | tostring] as $t | $t != null and $t == .text))
 ' --slurpfile suppressed "$WORK/pr-suppressed.json" "$WORK/pr-files.json" > "$WORK/pr-targets.json"
+
+# The annotations added or removed for findings already on the base: a suppressed finding of an
+# added one's rules, or an unsuppressed finding of a removed one's, in its file and on a line the
+# pull request does not add. Each is placed on the diff line, added or deleted, that holds its rules
+# and is nearest to where suppression-changes.sh found it, since the scanned commit may be the merge.
+jq '
+  def diff_lines: reduce (split("\n")[] | rtrimstr("\r")) as $l ({o: 0, n: 0, plus: {}, minus: {}};
+    if $l | startswith("@@") then ($l | capture("-(?<o>[0-9]+)(,[0-9]+)? \\+(?<n>[0-9]+)")) as $h
+      | .o = ($h.o | tonumber) | .n = ($h.n | tonumber)
+    elif $l | startswith("+") then .plus[.n | tostring] = $l[1:] | .n += 1
+    elif $l | startswith("-") then .minus[.o | tostring] = $l[1:] | .o += 1
+    elif $l | startswith("\\") then .
+    else .o += 1 | .n += 1 end);
+  def squash: gsub("\\s"; "");
+  (map({key: .filename, value: (.patch // "" | diff_lines)}) | from_entries) as $diff
+  | [(($changes[0].added // [])[] | . + {kind: "added", side: "RIGHT", ref: .line}),
+     (($changes[0].removed // [])[] | . + {kind: "removed", side: "LEFT", ref: ."base-line"})]
+  | reduce .[] as $c ({used: {}, out: []};
+      . as $state
+      | (($c.text | capture("(?<s>rules\\s*:\\s*\\[[^\\]]*\\])").s // "") | squash) as $seg
+      | ($seg | [scan("\"([^\"]*)\"")[0]]) as $rules
+      | [$findings[0][] | select(.file == $c.file and .suppressed == ($c.kind == "added")
+          and (.rule as $r | any($rules[]; . == $r)) and $diff[.file].plus[.line | tostring] != .text)] as $hits
+      | ($diff[$c.file][if $c.kind == "added" then "plus" else "minus" end] // {} | to_entries
+          | map(select(.value | squash | contains($seg)) | .key | tonumber
+            | select($state.used["\($c.file)|\($c.side)|\(.)"] | not))
+          | min_by(if . < $c.ref then $c.ref - . else . - $c.ref end)) as $line
+      | if $seg == "" or ($hits | length) == 0 or $line == null then .
+        else .used["\($c.file)|\($c.side)|\($line)"] = true
+          | .out += [{kind: $c.kind, file: $c.file, line: $line, side: $c.side, text: $c.text, findings: $hits}]
+        end)
+  | .out
+' --slurpfile changes "$CHANGES_FILE" --slurpfile findings "$WORK/pr-findings.json" "$WORK/pr-files.json" \
+  > "$WORK/pr-change-targets.json"
+BRANCH="$(jq -r '.branch // ""' "$CHANGES_FILE")"
 
 # The rule and tool of each alert code scanning commented at a target line, by alert number.
 echo '{}' > "$WORK/pr-alerts.json"
@@ -173,9 +165,36 @@ PLAN='
   def clip($n): if length > $n then .[0:$n] + "…" else . end;
   def reason: if .justification == "" then "_No reason given_" else .justification | clip(1000) | safe end;
   def header: "**Suppression detected**";
-  def note: "_A `bal scan` suppression (`@scan:Suppress`) is not dismissed automatically in pull requests, so it needs a reviewer'"'"'s explicit acceptance. Its alert is dismissed only by the scan of the default branch after the merge._";
+  def note: "_Suppressions are not dismissed automatically in pull requests, so this one needs a reviewer'"'"'s explicit acceptance._";
   def reply_body: [marker(.), header, "", "**Reason:** \(reason)", "", note] | join("\n");
   def own_body: [marker(.), header, "", "> **\(.severity)** `\(.rule)`: \(.message | clip(1000) | safe)", ">", "> **Reason:** \(reason)", "", note] | join("\n");
+  def change_marker($t): "<!-- scan-ballerina:suppression-change:\($category):\($t.kind) -->";
+  # Untrusted text in a code block, which shows HTML, mentions and Markdown as they are.
+  def code_block: gsub("\r?\n"; " ") | gsub("`"; "'"'"'") | clip(300) | "```ballerina\n\(.)\n```";
+  def finding_list: (.findings[:20] | map("- **\(.severity)** `\(.rule)` at line \(.line): \(.message | clip(300) | safe)"))
+    + (if (.findings | length) > 20 then ["- …and \((.findings | length) - 20) more"] else [] end);
+  def change_body:
+    if .kind == "added" then
+      [change_marker(.), "**Suppression added**", "", (.text | code_block), "",
+        "Suppresses these findings already on `\($branch)`:", ""] + finding_list + ["", note]
+    else
+      [change_marker(.), "**Suppression removed**", "", (.text | code_block), "",
+        "These findings already on `\($branch)` are reported again:", ""] + finding_list
+      + (if $code_scanning then ["", "_Their alerts stay dismissed until the merge, when the action reopens them._"] else [] end)
+    end | join("\n");
+  ($comments[0] | map(select((.body // "") | startswith("<!-- scan-ballerina:suppression-change:\($category):")))) as $changes_ours
+  | def same_place($c; $t): $c.path == $t.file and $c.line == $t.line and ($c.side // "RIGHT") == $t.side
+      and ($c.body | startswith(change_marker($t)));
+  ($change_targets[0][] as $t
+    | ($changes_ours | map(select(same_place(.; $t))) | first) as $c
+    | ($t | change_body) as $body
+    | if $c == null then {action: "create", path: $t.file, line: $t.line, side: $t.side, body: $body}
+      elif $c.body != $body then {action: "update", id: $c.id, body: $body}
+      else empty end),
+  ($changes_ours[] | select(.line != null) | . as $c
+    | select(any($change_targets[0][]; same_place($c; .)) | not)
+    | select(.body | contains("no longer applies") | not)
+    | {action: "update", id: .id, body: "\(.body | split("\n") | first)\nThis suppression change no longer applies, as of \($short)."}),
   ($comments[0] | map(select((.body // "") | startswith("<!-- scan-ballerina:suppression:\($category):")))) as $ours
   | ($comments[0] | map(select(.user.login == $bot and .in_reply_to_id == null)
       | . + {alert: ((.body // "") | [capture("/security/code-scanning/(?<n>[0-9]+)").n] | first | $alerts[0][. // ""])})
@@ -197,7 +216,9 @@ PLAN='
 plan() {
   jq -c -n --slurpfile targets "$WORK/pr-targets.json" --slurpfile comments "$WORK/pr-comments.json" \
     --slurpfile alerts "$WORK/pr-alerts.json" --arg category "$CATEGORY_NAME" --arg bot "$BOT_LOGIN" \
-    --arg tool "$TOOL" --arg short "${HEAD_SHA:0:7}" --argjson final "$1" "$PLAN"
+    --arg tool "$TOOL" --arg short "${HEAD_SHA:0:7}" --argjson final "$1" \
+    --slurpfile change_targets "$WORK/pr-change-targets.json" --arg branch "$BRANCH" \
+    --argjson code_scanning "$([ "${CODE_SCANNING:-false}" = true ] && echo true || echo false)" "$PLAN"
 }
 
 # Waits until code scanning has commented the alert of each target without a comment of ours.
@@ -225,7 +246,7 @@ while IFS= read -r item; do
         && REPLIED=$((REPLIED + 1)) || FAILED=$((FAILED + 1))
       ;;
     create)
-      jq -c --arg sha "$HEAD_SHA" '{body, commit_id: $sha, path, line, side: "RIGHT"}' <<< "$item" \
+      jq -c --arg sha "$HEAD_SHA" '{body, commit_id: $sha, path, line, side: (.side // "RIGHT")}' <<< "$item" \
         | gh_api -X POST "$PULLS/$NUMBER/comments" --data-binary @- > /dev/null \
         && CREATED=$((CREATED + 1)) || FAILED=$((FAILED + 1))
       ;;
@@ -239,4 +260,4 @@ done < <(plan true)
 
 [ "$FAILED" -eq 0 ] \
   || log_warning "Could not write $FAILED comment(s) on pull request #$NUMBER. The token needs the pull-requests: write permission."
-echo "Pull request #$NUMBER: $(jq 'length' "$WORK/pr-targets.json") suppressed finding(s) on added lines; replies $REPLIED, comments $CREATED, updated $UPDATED."
+echo "Pull request #$NUMBER: $(jq 'length' "$WORK/pr-targets.json") suppressed finding(s) on added lines, $(jq 'length' "$WORK/pr-change-targets.json") suppression change(s) for findings already on the base; replies $REPLIED, comments $CREATED, updated $UPDATED."

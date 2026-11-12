@@ -67,7 +67,7 @@ inputs:
     required: false
     default: 'true'
   pr-comment:
-    description: 'In pull_request and pull_request_target runs, comment the suppression''s reason of each suppressed finding on a line the pull request adds: as a reply to code scanning''s comment on its alert, waiting up to 2 minutes for it, or else as a comment of its own at that line with the finding''s message. Also keeps one comment on the pull request listing the @scan:Suppress annotations it adds and removes, edited by later runs. Needs the pull-requests: write permission. Skipped in runs for pull requests from forks and Dependabot, whose token cannot comment.'
+    description: 'In pull_request and pull_request_target runs, comment the suppression''s reason of each suppressed finding on a line the pull request adds: as a reply to code scanning''s comment on its alert, waiting up to 2 minutes for it, or else as a comment of its own at that line with the finding''s message. Also comments at each @scan:Suppress annotation the pull request adds or removes for findings already on the default branch, listing those findings, edited by later runs. Needs the pull-requests: write permission. Skipped in runs for pull requests from forks and Dependabot, whose token cannot comment.'
     required: false
     default: 'true'
   platform-config:
@@ -392,6 +392,22 @@ runs:
         category: ${{ inputs.category }}
         token: ${{ inputs.github-token }}
 
+    # Read from the diff, so it also works for pull requests from forks and Dependabot, which cannot
+    # read the alerts. Runs before the alerts are updated, which skip the removals it warns about.
+    - name: Check for added and removed suppressions
+      id: suppression-changes
+      if: >-
+        steps.merge.outcome == 'success'
+        && (github.event_name == 'pull_request' || github.event_name == 'pull_request_target')
+      continue-on-error: true
+      shell: bash
+      env:
+        SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
+        SUPPRESSIONS: ${{ inputs.suppressions }}
+        CODE_SCANNING: ${{ steps.validate.outputs.github-code-scanning }}
+        CATEGORY: ${{ inputs.category }}
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/suppression-changes.sh"
+
     # Dismisses the alerts of suppressed findings on the default branch, and elsewhere warns about
     # removed suppressions. It only warns on failure, so it never fails the action.
     - name: Update the code scanning alerts of suppressed findings
@@ -407,22 +423,6 @@ runs:
         SUPPRESSED_COUNT: ${{ steps.merge.outputs.suppressed-count }}
         CATEGORY: ${{ inputs.category }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/dismiss-alerts.sh"
-
-    # Read from the diff, so it also works for pull requests from forks and Dependabot, which cannot
-    # read the alerts.
-    - name: Check for added and removed suppressions
-      id: suppression-changes
-      if: >-
-        steps.merge.outcome == 'success'
-        && (github.event_name == 'pull_request' || github.event_name == 'pull_request_target')
-      continue-on-error: true
-      shell: bash
-      env:
-        SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
-        SUPPRESSIONS: ${{ inputs.suppressions }}
-        CODE_SCANNING: ${{ steps.validate.outputs.github-code-scanning }}
-        CATEGORY: ${{ inputs.category }}
-      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/suppression-changes.sh"
 
     # Only warns on failure, so it never fails the action.
     - name: Comment the suppressed findings on the pull request

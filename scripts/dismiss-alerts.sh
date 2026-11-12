@@ -11,14 +11,16 @@
 #   - On other branches, warns about each unsuppressed finding that code scanning matches to a
 #     dismissed alert, and so shows nothing new for: one this step dismissed whose suppression was
 #     removed, and one dismissed by anyone whose finding the default branch no longer has, such as
-#     code reintroduced after it was fixed.
+#     code reintroduced after it was fixed. It skips a finding whose suppression the pull request
+#     removes in the diff, which suppression-changes.sh has already warned about at the annotation.
 # Both read the alerts of the uploaded ref, GITHUB_REF, whose locations are those of the findings
 # just uploaded. It first waits until code scanning has processed the upload, so that they are current.
 #
 # Inputs (environment): SCAN_WORK_DIR, GITHUB_TOKEN, GITHUB_REPOSITORY, GITHUB_REF, GITHUB_API_URL,
 # GITHUB_SHA, GITHUB_WORKSPACE, GITHUB_EVENT_PATH, DEFAULT_BRANCH, SARIF_ID, SUPPRESSED_COUNT (the
 # suppressed-count output of merge-sarif.sh), CATEGORY.
-# Reads: $SCAN_WORK_DIR/results.json and $SCAN_WORK_DIR/merged.sarif, written by merge-sarif.sh.
+# Reads: $SCAN_WORK_DIR/results.json and $SCAN_WORK_DIR/merged.sarif, written by merge-sarif.sh, and
+# $SCAN_WORK_DIR/suppression-changes.json, written by suppression-changes.sh when it ran.
 # Writes: $SCAN_WORK_DIR/alerts.json, with the number of alerts dismissed, recorded (taken over or
 # given a changed justification), reopened, fixed and failed to change, left-open (the suppressed
 # findings whose alerts stay open because the alerts could not be listed), unsuppressed (findings
@@ -142,6 +144,11 @@ if [ "${DEFAULT_BRANCH:-false}" != true ]; then
   fi
   UNSUPPRESSED=0
   REINTRODUCED=0
+  # Whether the pull request removes an annotation in file $1 that lists rule $2.
+  removed_in_diff() {
+    jq -e --arg file "$1" --arg rule "\"$2\"" '(.removed // []) | any(.file == $file and (.text | contains($rule)))' \
+      "$WORK/suppression-changes.json" > /dev/null 2>&1
+  }
   while IFS= read -r item; do
     [ -n "$item" ] || continue
     # A unit separator keeps empty fields, which a tab, as whitespace, would merge.
@@ -158,6 +165,7 @@ if [ "${DEFAULT_BRANCH:-false}" != true ]; then
       # Dismissed by hand while the default branch reports it: a decision about this finding.
       [ "$own" = true ] || continue
       UNSUPPRESSED=$((UNSUPPRESSED + 1))
+      ! removed_in_diff "$file" "$rule" || continue
       message="This $rule finding is no longer suppressed, but its alert #$number stays dismissed on $BRANCH until this change is merged, when the action reopens it: $url"
     else
       REINTRODUCED=$((REINTRODUCED + 1))
