@@ -4,8 +4,8 @@
 #
 # Inputs (environment): PLATFORMS, SCAN_PATHS, EXCLUDE_PATHS, EXCLUDE_TESTS, CATEGORY,
 # INCLUDE_RULES, EXCLUDE_RULES, FAIL_ON_SEVERITY, FAIL_ON_COUNT, ANNOTATIONS, JOB_SUMMARY,
-# ARTIFACTS, SUPPRESSIONS, PLATFORM_CONFIG, BALLERINA_VERSION, TOOL_VERSION, MATRIX (the matrix as
-# JSON).
+# ARTIFACTS, SUPPRESSIONS, PR_COMMENT, PLATFORM_CONFIG, BALLERINA_VERSION, TOOL_VERSION, MATRIX
+# (the matrix as JSON).
 # Outputs: work-dir, github-code-scanning, restricted, default-branch, update-alerts (true when
 # dismiss-alerts.sh runs after the upload), save-cache, sonarqube, sonarqube-skipped, artifacts
 # (true or false), artifact-name, run-key.

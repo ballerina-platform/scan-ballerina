@@ -383,6 +383,94 @@ jobs:
             bash scripts/removed-suppressions.sh > "$WORK/log.txt"
           [ "$(jq -c . "$WORK/alerts.json")" = '{}' ] || fail "Expected no check with suppressions off"
 
+  # pr-comment.sh keeps one comment per category on the pull request, found by its marker.
+  pr-comment:
+    name: Pull request comment
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the comment created, updated and left alone
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          WORK="$RUNNER_TEMP/pr-comment"
+          mkdir -p "$WORK/bin"
+          # A fake curl. GET prints $COMMENTS_FILE; POST and PATCH record the method and URL in
+          # $CALLS_FILE and the request body in $PAYLOAD_FILE.
+          cat > "$WORK/bin/curl" << 'EOF'
+          #!/usr/bin/env bash
+          method=GET url=""
+          while [ $# -gt 0 ]; do
+            case "$1" in
+              -X) method="$2" && shift 2 ;;
+              https://*) url="$1" && shift ;;
+              *) shift ;;
+            esac
+          done
+          if [ "$method" = GET ]; then cat "$COMMENTS_FILE"; exit 0; fi
+          echo "$method $url" >> "$CALLS_FILE"
+          cat > "$PAYLOAD_FILE"
+          echo '{}'
+          EOF
+          chmod +x "$WORK/bin/curl"
+          echo '{"pull_request": {"number": 7}}' > "$WORK/event.json"
+          MARKER='<!-- scan-ballerina:suppressions:bal-scan -->'
+          jq -n '[
+            {severity: "low", rule: "ballerina:1", file: "a b/main.bal", line: 4, suppressed: true, justification: "Kept | for <now>\nfor now"},
+            {severity: "high", rule: "ballerina/crypto:2", file: "main.bal", line: 9, suppressed: true, justification: ""},
+            {severity: "none", rule: "ballerina:9", file: "main.bal", line: 1, suppressed: true, justification: "Not counted"},
+            {severity: "high", rule: "ballerina:3", file: "main.bal", line: 2, suppressed: false, justification: ""}]' \
+            > "$WORK/results.json"
+          run() {
+            : > "$WORK/calls.txt"
+            rm -f "$WORK/payload.json"
+            PATH="$WORK/bin:$PATH" COMMENTS_FILE="$WORK/comments.json" CALLS_FILE="$WORK/calls.txt" \
+              PAYLOAD_FILE="$WORK/payload.json" SCAN_WORK_DIR="$WORK" GITHUB_TOKEN=fake GITHUB_REPOSITORY=owner/repo \
+              GITHUB_SHA=0123456789abcdef GITHUB_WORKSPACE="$RUNNER_TEMP" GITHUB_EVENT_PATH="$WORK/event.json" \
+              CATEGORY=bal-scan bash scripts/pr-comment.sh > "$WORK/log.txt"
+          }
+
+          # No comment yet: one is created, with the counted suppressed findings, high first.
+          echo '[{"id": 1, "body": "Looks good"}]' > "$WORK/comments.json"
+          run
+          [ "$(cat "$WORK/calls.txt")" = "POST https://api.github.com/repos/owner/repo/issues/7/comments" ] \
+            || fail "Expected a new comment, got: $(cat "$WORK/calls.txt")"
+          BODY="$(jq -r .body "$WORK/payload.json")"
+          [ "$(head -n1 <<< "$BODY")" = "$MARKER" ] || fail "Expected the marker first, got: $BODY"
+          grep -qF '2 suppressed finding(s)' <<< "$BODY" || fail "Expected two findings, got: $BODY"
+          ROWS="$(grep '^| [a-z]' <<< "$BODY" | grep -v '^| Severity')"
+          [ "$(grep -c . <<< "$ROWS")" -eq 2 ] || fail "Expected two rows, got: $ROWS"
+          [ "$(head -n1 <<< "$ROWS")" = '| high | `ballerina/crypto:2` | [main.bal:9](https://github.com/owner/repo/blob/0123456789abcdef/main.bal#L9) | _No reason given_ |' ] \
+            || fail "Unexpected first row: $(head -n1 <<< "$ROWS")"
+          [ "$(tail -n1 <<< "$ROWS")" = '| low | `ballerina:1` | [a b/main.bal:4](https://github.com/owner/repo/blob/0123456789abcdef/a%20b/main.bal#L4) | Kept \| for &lt;now&gt; for now |' ] \
+            || fail "Unexpected second row: $(tail -n1 <<< "$ROWS")"
+
+          # The comment with the marker is edited in place.
+          jq -n --arg m "$MARKER" '[{id: 1, body: "Looks good"}, {id: 55, body: "\($m)\nold"}]' > "$WORK/comments.json"
+          run
+          [ "$(cat "$WORK/calls.txt")" = "PATCH https://api.github.com/repos/owner/repo/issues/comments/55" ] \
+            || fail "Expected comment 55 to be edited, got: $(cat "$WORK/calls.txt")"
+
+          # Once nothing is suppressed, the existing comment says so, and no comment is created.
+          jq 'map(.suppressed = false)' "$WORK/results.json" > "$WORK/none.json" && mv "$WORK/none.json" "$WORK/results.json"
+          run
+          [ "$(cat "$WORK/calls.txt")" = "PATCH https://api.github.com/repos/owner/repo/issues/comments/55" ] \
+            || fail "Expected comment 55 to be edited, got: $(cat "$WORK/calls.txt")"
+          jq -r .body "$WORK/payload.json" | grep -qF 'reports no suppressed finding' \
+            || fail "Expected the comment to say nothing is suppressed, got: $(jq -r .body "$WORK/payload.json")"
+          echo '[]' > "$WORK/comments.json"
+          run
+          [ ! -s "$WORK/calls.txt" ] || fail "Expected no comment, got: $(cat "$WORK/calls.txt")"
+
+          # A response that cannot be read warns, and comments nothing.
+          echo 'not json' > "$WORK/comments.json"
+          run
+          [ ! -s "$WORK/calls.txt" ] || fail "Expected no comment on a bad response, got: $(cat "$WORK/calls.txt")"
+          grep -q '^::warning.*Could not read the comments of pull request #7' "$WORK/log.txt" \
+            || fail "Expected a warning, got: $(cat "$WORK/log.txt")"
+
   # The supported scan tools are 0.13.0 and later, and the 0.11.x backport of its features from
   # 0.11.1 for Ballerina 2201.12.x. 0.12.x has neither suppressions nor --exclude-tests.
   scan-tool-support:
@@ -475,8 +563,9 @@ jobs:
             grep -qx save-cache=false "$WORK/save-$event.txt" || fail "$event must not save the SonarScanner cache"
           done
 
-      # Unsupported platforms fail the step and unselected ones only warn. A selected platform whose settings are missing
-      # or do not follow its schema fails the step.
+      # Unsupported platforms fail the step and unselected ones only warn. A selected platform whose
+      # settings are missing or do not follow its schema fails the step, except that a restricted run
+      # skips sonarqube.
       - name: Check the platforms and platform-config validation
         shell: bash
         run: |
@@ -486,10 +575,12 @@ jobs:
           WORK="$RUNNER_TEMP/platform-validation"
           mkdir -p "$WORK"
           SONAR_OK=$'sonarqube:\n  host-url: https://sonar.example.com\n  token: abc'
-          # Usage: check NAME PLATFORMS PLATFORM_CONFIG pass|fail [KIND MESSAGE]
+          # Usage: [ACTOR=...] check NAME PLATFORMS PLATFORM_CONFIG pass|fail [KIND MESSAGE]
+          # A push by ACTOR, so that a pull request from a fork running this test is not a restricted run.
           check() {
             local status=0
-            GITHUB_OUTPUT=/dev/null PLATFORMS="$2" PLATFORM_CONFIG="$3" CATEGORY="$1" \
+            GITHUB_EVENT_NAME=push GITHUB_EVENT_PATH=/dev/null GITHUB_ACTOR="${ACTOR:-octocat}" \
+              GITHUB_OUTPUT=/dev/null PLATFORMS="$2" PLATFORM_CONFIG="$3" CATEGORY="$1" \
               bash scripts/validate.sh > "$WORK/$1.log" || status=$?
             if [ "$4" = pass ] && [ "$status" -ne 0 ]; then
               fail "$1: must pass: $(cat "$WORK/$1.log")"
@@ -509,6 +600,8 @@ jobs:
           check gcs-settings github-code-scanning $'github-code-scanning:\n  a: 1' fail error "platform-config.github-code-scanning takes no settings"
           check sonarqube-missing sonarqube '' fail error "sonarqube is in platforms, but platform-config has no settings for it"
           check sonarqube-null sonarqube 'sonarqube:' fail error "sonarqube is in platforms, but platform-config has no settings for it"
+          # A platform-config passed whole from a secret is empty in a Dependabot run.
+          ACTOR='dependabot[bot]' check sonarqube-missing-restricted sonarqube '' pass warning "Skipping sonarqube"
           check sonarqube-unknown-field sonarqube $'sonarqube:\n  tokn: x' fail error 'platform-config.sonarqube has an unknown field "tokn"'
           check sonarqube-ok sonarqube "$SONAR_OK" pass
           check not-a-mapping '' 'foo' fail error "platform-config must be a mapping keyed by platform"
