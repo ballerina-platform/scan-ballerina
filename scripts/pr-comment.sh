@@ -164,7 +164,7 @@ PLAN='
   def clip($n): if length > $n then .[0:$n] + "…" else . end;
   def reason: if .justification == "" then "_No reason given_" else .justification | clip(1000) | safe end;
   def header: "**Suppression detected**";
-  def note: "_Suppressions are not dismissed automatically in pull requests, so this one needs a reviewer'"'"'s explicit acceptance._";
+  def note: "_Please review this suppression before merging: once merged, the action dismisses its alert._";
   def reply_body: [marker(.), header, "", "**Reason:** \(reason)", "", note] | join("\n");
   def own_body: [marker(.), header, "", "> **\(.severity)** `\(.rule)`: \(.message | clip(1000) | safe)", ">", "> **Reason:** \(reason)", "", note] | join("\n");
   def change_marker($t): "<!-- scan-ballerina:suppression-change:\($category):\($t.kind) -->";
@@ -174,15 +174,14 @@ PLAN='
   def change_reason: (.text | capture("reason\\s*:\\s*\"(?<r>(\\\\.|[^\"\\\\])*)\"").r // null)
     // (if .kind == "added" then .findings | map(.justification // "" | select(. != "")) | first else null end)
     // "";
-  def change_line: (if (.findings | map(.rule) | unique | length) > 1 then "were" else "was" end) as $was
-    | change_reason as $r
-    | "\(change_rules) \(if .kind == "added" then (if $was == "was" then "is" else "are" end) else $was end) suppressed"
-      + (if $r == "" then " without a reason." else " for this reason: \($r | clip(1000) | safe)" end);
+  def change_lines: change_reason as $r
+    | ["**Rule\(if (.findings | map(.rule) | unique | length) > 1 then "s" else "" end):** \(change_rules)", "",
+       "**Reason:** \(if $r == "" then "_No reason given_" else $r | clip(1000) | safe end)"];
   def change_body:
     if .kind == "added" then
-      [change_marker(.), "**Suppression added**", "", change_line, "", note]
+      [change_marker(.), "**New suppression added**", ""] + change_lines
     else
-      [change_marker(.), "**Suppression removed**", "", change_line]
+      [change_marker(.), "**Suppression removed**", ""] + change_lines
       + (if $code_scanning then ["", if (.findings | length) > 1
           then "_Their alerts stay dismissed until the merge, when the action reopens them._"
           else "_Its alert stays dismissed until the merge, when the action reopens it._" end] else [] end)

@@ -114,9 +114,13 @@ while IFS=$'\t' read -r sign file line base_line text; do
   [ -n "$file" ] || continue
   if [ "$sign" = + ]; then
     ADDED=$((ADDED + 1))
-    message="This pull request adds $text. The findings it suppresses are left out of the counts and the gate"
-    [ "${CODE_SCANNING:-false}" != true ] || message+=", and code scanning shows no new alert for those already on $BRANCH"
-    log_file_warning "$file" "$line" "$message, so a reviewer needs to accept it."
+    message="$(jq -rn --arg t "$text" '
+      ($t | capture("rules\\s*:\\s*\\[(?<r>[^\\]]*)\\]").r // "" | [scan("\"([^\"]*)\"")[0]]) as $rules
+      | ($t | capture("reason\\s*:\\s*\"(?<r>(\\\\.|[^\"\\\\])*)\"").r // "") as $reason
+      | "Suppressed rule\(if ($rules | length) > 1 then "s" else "" end): \(if $rules == [] then "not specified" else $rules | join(", ") end)",
+        "Suppressed reason: \(if $reason == "" then "not given" else $reason end)",
+        "Its findings are left out of the counts and the gate as soon as it is pushed, whether or not a reviewer accepts it."')"
+    log_file_warning "$file" "$line" "$message"
   else
     REMOVED=$((REMOVED + 1))
     message="This pull request removes $text, so the findings it suppressed are reported again."
