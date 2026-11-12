@@ -140,7 +140,6 @@ jq '
   | .out
 ' --slurpfile changes "$CHANGES_FILE" --slurpfile findings "$WORK/pr-findings.json" "$WORK/pr-files.json" \
   > "$WORK/pr-change-targets.json"
-BRANCH="$(jq -r '.branch // ""' "$CHANGES_FILE")"
 
 # The rule and tool of each alert code scanning commented at a target line, by alert number.
 echo '{}' > "$WORK/pr-alerts.json"
@@ -169,18 +168,24 @@ PLAN='
   def reply_body: [marker(.), header, "", "**Reason:** \(reason)", "", note] | join("\n");
   def own_body: [marker(.), header, "", "> **\(.severity)** `\(.rule)`: \(.message | clip(1000) | safe)", ">", "> **Reason:** \(reason)", "", note] | join("\n");
   def change_marker($t): "<!-- scan-ballerina:suppression-change:\($category):\($t.kind) -->";
-  # Untrusted text in a code block, which shows HTML, mentions and Markdown as they are.
-  def code_block: gsub("\r?\n"; " ") | gsub("`"; "'"'"'") | clip(300) | "```ballerina\n\(.)\n```";
-  def finding_list: (.findings[:20] | map("- **\(.severity)** `\(.rule)` at line \(.line): \(.message | clip(300) | safe)"))
-    + (if (.findings | length) > 20 then ["- …and \((.findings | length) - 20) more"] else [] end);
+  def change_rules: .findings | map(.rule) | unique | map("`\(gsub("`"; "'"'"'") | safe)`")
+    | if length > 1 then "\(.[:-1] | join(", ")) and \(.[-1])" else .[0] end;
+  # The annotation of a multi-line one may be only its rules line, so an added one falls back to its findings.
+  def change_reason: (.text | capture("reason\\s*:\\s*\"(?<r>(\\\\.|[^\"\\\\])*)\"").r // null)
+    // (if .kind == "added" then .findings | map(.justification // "" | select(. != "")) | first else null end)
+    // "";
+  def change_line: (if (.findings | map(.rule) | unique | length) > 1 then "were" else "was" end) as $was
+    | change_reason as $r
+    | "\(change_rules) \(if .kind == "added" then (if $was == "was" then "is" else "are" end) else $was end) suppressed"
+      + (if $r == "" then " without a reason." else " for this reason: \($r | clip(1000) | safe)" end);
   def change_body:
     if .kind == "added" then
-      [change_marker(.), "**Suppression added**", "", (.text | code_block), "",
-        "Suppresses these findings already on `\($branch)`:", ""] + finding_list + ["", note]
+      [change_marker(.), "**Suppression added**", "", change_line, "", note]
     else
-      [change_marker(.), "**Suppression removed**", "", (.text | code_block), "",
-        "These findings already on `\($branch)` are reported again:", ""] + finding_list
-      + (if $code_scanning then ["", "_Their alerts stay dismissed until the merge, when the action reopens them._"] else [] end)
+      [change_marker(.), "**Suppression removed**", "", change_line]
+      + (if $code_scanning then ["", if (.findings | length) > 1
+          then "_Their alerts stay dismissed until the merge, when the action reopens them._"
+          else "_Its alert stays dismissed until the merge, when the action reopens it._" end] else [] end)
     end | join("\n");
   ($comments[0] | map(select((.body // "") | startswith("<!-- scan-ballerina:suppression-change:\($category):")))) as $changes_ours
   | def same_place($c; $t): $c.path == $t.file and $c.line == $t.line and ($c.side // "RIGHT") == $t.side
@@ -217,7 +222,7 @@ plan() {
   jq -c -n --slurpfile targets "$WORK/pr-targets.json" --slurpfile comments "$WORK/pr-comments.json" \
     --slurpfile alerts "$WORK/pr-alerts.json" --arg category "$CATEGORY_NAME" --arg bot "$BOT_LOGIN" \
     --arg tool "$TOOL" --arg short "${HEAD_SHA:0:7}" --argjson final "$1" \
-    --slurpfile change_targets "$WORK/pr-change-targets.json" --arg branch "$BRANCH" \
+    --slurpfile change_targets "$WORK/pr-change-targets.json" \
     --argjson code_scanning "$([ "${CODE_SCANNING:-false}" = true ] && echo true || echo false)" "$PLAN"
 }
 

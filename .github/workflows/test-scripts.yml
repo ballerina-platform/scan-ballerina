@@ -601,15 +601,12 @@ jobs:
           NEW="$(jq -sr '.[] | select(.path == "svc.bal" and .line == 7 and .side == "RIGHT") | .body' "$WORK/payloads.jsonl")"
           [ "$(head -n1 <<< "$ADDED")" = '<!-- scan-ballerina:suppression-change:bal-scan:added -->' ] \
             || fail "Expected a comment at the added x:1 annotation, got: $(cat "$WORK/payloads.jsonl")"
-          [[ "$ADDED" == *"$(printf '%s\n' '```ballerina' '@scan:Suppress {rules: ["x:1"], reason: "Ok"}' '```')"* ]] \
-            && grep -qxF 'Suppresses these findings already on `main`:' <<< "$ADDED" \
-            && grep -qxF -- '- **low** `x:1` at line 3: Old &lt;code&gt;' <<< "$ADDED" \
+          grep -qxF '**Suppression added**' <<< "$ADDED" && grep -qxF '`x:1` is suppressed for this reason: Ok' <<< "$ADDED" \
             && grep -qF 'explicit acceptance' <<< "$ADDED" || fail "Unexpected comment at the added annotation: $ADDED"
           [ "$(head -n1 <<< "$REMOVED")" = '<!-- scan-ballerina:suppression-change:bal-scan:removed -->' ] \
             || fail "Expected a comment at the removed y:1 annotation, got: $(cat "$WORK/payloads.jsonl")"
-          [[ "$REMOVED" == *"$(printf '%s\n' '```ballerina' '@scan:Suppress {rules: ["y:1"]}' '```')"* ]] \
-            && grep -qxF 'These findings already on `main` are reported again:' <<< "$REMOVED" \
-            && grep -qxF -- '- **high** `y:1` at line 4: Unchecked' <<< "$REMOVED" && grep -qF 'reopens them' <<< "$REMOVED" \
+          grep -qxF '**Suppression removed**' <<< "$REMOVED" && grep -qxF '`y:1` was suppressed without a reason.' <<< "$REMOVED" \
+            && grep -qxF '_Its alert stays dismissed until the merge, when the action reopens it._' <<< "$REMOVED" \
             || fail "Unexpected comment at the removed annotation: $REMOVED"
           [ "$(head -n1 <<< "$NEW")" = '<!-- scan-ballerina:suppression:bal-scan:z:1 -->' ] \
             || fail "Expected the usual comment for the new z:1 finding, got: $(cat "$WORK/payloads.jsonl")"
