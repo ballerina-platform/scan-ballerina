@@ -320,14 +320,22 @@ log_error() { echo "::error title=bal scan ($(escape_property "${CATEGORY:-bal-s
 log_warning() { echo "::warning title=bal scan ($(escape_property "${CATEGORY:-bal-scan}"))::$(escape_data "$1")"; }
 log_notice() { echo "::notice title=bal scan ($(escape_property "${CATEGORY:-bal-scan}"))::$(escape_data "$1")"; }
 
-# Prints warning $3 at line $2 of file $1. GitHub shows at most 10 warnings per step, so later ones
-# are left out.
+# Prints annotation $4 of level $1 (warning or notice) at line $3 of file $2. GitHub shows at most 10
+# annotations of each level per step, so later ones are left out.
 FILE_WARNINGS=0
-log_file_warning() {
-  FILE_WARNINGS=$((FILE_WARNINGS + 1))
-  [ "$FILE_WARNINGS" -le 10 ] || return 0
-  echo "::warning file=$(escape_property "$1"),line=$2,title=$(escape_property "bal scan ($(trim "${CATEGORY:-bal-scan}"))")::$(escape_data "$3")"
+FILE_NOTICES=0
+log_file_annotation() {
+  local shown
+  if [ "$1" = notice ]; then
+    FILE_NOTICES=$((FILE_NOTICES + 1)) && shown="$FILE_NOTICES"
+  else
+    FILE_WARNINGS=$((FILE_WARNINGS + 1)) && shown="$FILE_WARNINGS"
+  fi
+  [ "$shown" -le 10 ] || return 0
+  echo "::$1 file=$(escape_property "$2"),line=$3,title=$(escape_property "bal scan ($(trim "${CATEGORY:-bal-scan}"))")::$(escape_data "$4")"
 }
+log_file_warning() { log_file_annotation warning "$@"; }
+log_file_notice() { log_file_annotation notice "$@"; }
 
 die() {
   log_error "$1"

@@ -307,14 +307,14 @@ jobs:
           # suppresses other rules.
           check unshifted 12
 
-      # Runs for pull requests from forks and Dependabot cannot read the alerts, so
-      # removed-suppressions.sh reads the removed annotations from the diff with the base commit.
-      - name: Check the warnings of removed annotations without access to the alerts
+      # suppression-changes.sh reads the annotations a pull request adds and removes from the diff with
+      # the base commit: a warning at each added one and a notice at each removed one.
+      - name: Check the annotations of added and removed suppressions
         shell: bash
         run: |
           set -euo pipefail
           fail() { echo "::error::$1"; exit 1; }
-          WORK="$RUNNER_TEMP/removed-annotations"
+          WORK="$RUNNER_TEMP/suppression-changes"
           REPO="$WORK/repo"
           mkdir -p "$REPO"
           git -C "$REPO" init -q
@@ -326,18 +326,21 @@ jobs:
             '@scan:Suppress {rules: ["x:1"]}' 'function c() {}' '@scan:Suppress {rules: ["x:1"]}' 'function d() {}' \
             '@scan:Suppress {rules: ["x:1"]}' 'function e() {}' \
             '@scan:Suppress {' '    rules: ["y:1"],' '    reason: "Several lines"' '}' 'function f() {}' \
-            '@scan:Suppress {rules: ["z:1"], reason: "Old"}' 'function g() {}' > "$REPO/auth.bal"
+            '@scan:Suppress {rules: ["z:1"], reason: "Old"}' 'function g() {}' 'function i() {}' 'function j() {}' > "$REPO/auth.bal"
           printf '%s\n' '@scan:Suppress {rules: ["v:1"]}' 'function h() {}' > "$REPO/other.bal"
           git -C "$REPO" add -A && git -C "$REPO" commit -qm base
           BASE="$(git -C "$REPO" rev-parse HEAD)"
           # Removes the jwt:5 annotation, moves the jwt:1 one, removes two of the three identical x:1
-          # ones, changes the rules of the multi-line one, and changes only the reason of the z:1 one.
+          # ones, changes the rules of the multi-line one, changes only the reason of the z:1 one, and
+          # adds a one-line n:1 annotation and a multi-line m:1 one to existing functions.
           git -C "$REPO" checkout -qb pr
           printf '%s\n' 'import ballerina/jwt;' '' 'function a() {}' '' 'function b() {}' \
             '@scan:Suppress {rules: ["ballerina/jwt:1"]}' 'function c() {}' 'function d() {}' \
             '@scan:Suppress {rules: ["x:1"]}' 'function e() {}' \
             '@scan:Suppress {' '    rules: ["w:1"],' '    reason: "Several lines"' '}' 'function f() {}' \
-            '@scan:Suppress {rules: ["z:1"], reason: "New"}' 'function g() {}' > "$REPO/auth.bal"
+            '@scan:Suppress {rules: ["z:1"], reason: "New"}' 'function g() {}' \
+            '@scan:Suppress {rules: ["n:1"], reason: "Checked"}' 'function i() {}' \
+            '@scan:Suppress {' '    rules: ["m:1"]' '}' 'function j() {}' > "$REPO/auth.bal"
           git -C "$REPO" commit -qam head
           # The base branch removes an annotation after BASE, which the pull request must not be blamed
           # for, and GitHub checks out the merge commit.
@@ -346,30 +349,46 @@ jobs:
           git -C "$REPO" commit -qam "base moves on"
           git -C "$REPO" merge -q --no-ff pr -m merge
           jq -n --arg sha "$BASE" '{repository: {default_branch: "main"}, pull_request: {base: {sha: $sha}}}' > "$WORK/event.json"
-          # Usage: check_removed NAME, on the commit checked out in $REPO.
-          check_removed() {
-            SCAN_WORK_DIR="$WORK" GITHUB_EVENT_PATH="$WORK/event.json" GITHUB_WORKSPACE="$REPO" CATEGORY=bal-scan \
-              bash scripts/removed-suppressions.sh > "$WORK/log.txt"
-            out="$(grep '^::warning' "$WORK/log.txt" || true)"
-            [ "$(grep -c . <<< "$out")" -eq 4 ] || fail "$1: expected four warnings, got: $out"
-            grep -q '^::warning file=auth.bal,line=3,.*removes @scan:Suppress {rules: \["ballerina/jwt:5"\]' <<< "$out" \
-              || fail "$1: expected a warning for the jwt:5 annotation at line 3, got: $out"
-            [ "$(grep -c 'removes @scan:Suppress {rules: \["x:1"\]}' <<< "$out")" -eq 2 ] \
-              || fail "$1: expected two warnings for the x:1 annotations, got: $out"
-            grep -q 'removes @scan:Suppress {rules: \["y:1"\]}' <<< "$out" \
-              || fail "$1: expected a warning for the y:1 rules, got: $out"
-            ! grep -q 'other.bal\|z:1\|jwt:1' <<< "$out" || fail "$1: unexpected warning in: $out"
-            [ "$(jq -c . "$WORK/alerts.json")" = '{"removed":4,"branch":"main"}' ] \
-              || fail "$1: unexpected alerts.json $(cat "$WORK/alerts.json")"
+          # Usage: check_changes NAME, on the commit checked out in $REPO.
+          check_changes() {
+            SCAN_WORK_DIR="$WORK" GITHUB_EVENT_PATH="$WORK/event.json" GITHUB_WORKSPACE="$REPO" CATEGORY=bal-scan CODE_SCANNING=true \
+              bash scripts/suppression-changes.sh > "$WORK/log.txt"
+            notices="$(grep '^::notice' "$WORK/log.txt" || true)"
+            warnings="$(grep '^::warning' "$WORK/log.txt" || true)"
+            [ "$(grep -c . <<< "$notices")" -eq 4 ] || fail "$1: expected four notices, got: $notices"
+            grep -q '^::notice file=auth.bal,line=3,.*removes @scan:Suppress {rules: \["ballerina/jwt:5"\].*dismissed on main' <<< "$notices" \
+              || fail "$1: expected a notice for the jwt:5 annotation at line 3, got: $notices"
+            [ "$(grep -c 'removes @scan:Suppress {rules: \["x:1"\]}' <<< "$notices")" -eq 2 ] \
+              || fail "$1: expected two notices for the x:1 annotations, got: $notices"
+            grep -q 'removes @scan:Suppress {rules: \["y:1"\]}' <<< "$notices" \
+              || fail "$1: expected a notice for the y:1 rules, got: $notices"
+            [ "$(grep -c . <<< "$warnings")" -eq 3 ] || fail "$1: expected three warnings, got: $warnings"
+            grep -q '^::warning file=auth.bal,line=12,.*adds @scan:Suppress {rules: \["w:1"\]}' <<< "$warnings" \
+              || fail "$1: expected a warning for the w:1 rules at line 12, got: $warnings"
+            grep -q '^::warning file=auth.bal,line=18,.*adds @scan:Suppress {rules: \["n:1"\], reason: "Checked"}.*already on main' <<< "$warnings" \
+              || fail "$1: expected a warning for the n:1 annotation at line 18, got: $warnings"
+            grep -q '^::warning file=auth.bal,line=20,.*adds @scan:Suppress { rules: \["m:1"\] }' <<< "$warnings" \
+              || fail "$1: expected a warning for the multi-line m:1 annotation at line 20, got: $warnings"
+            ! grep -q 'other.bal\|z:1\|jwt:1' <<< "$notices$warnings" || fail "$1: unexpected annotation in: $notices$warnings"
+            [ "$(jq -c '[.branch, (.added | map(.line)), (.removed | map([.line, ."base-line"]))]' "$WORK/suppression-changes.json")" \
+              = '["main",[12,18,20],[[3,3],[6,8],[8,10],[12,15]]]' ] \
+              || fail "$1: unexpected suppression-changes.json $(cat "$WORK/suppression-changes.json")"
+            [ "$(jq -r '.head' "$WORK/suppression-changes.json")" = "$(git -C "$REPO" rev-parse HEAD)" ] \
+              || fail "$1: expected head to be the checked out commit"
           }
-          check_removed merge
+          check_changes merge
           # A checkout of the pull request's head is compared from where it branched off.
           git -C "$REPO" checkout -q pr
-          check_removed head
-          # With suppressions off, removing an annotation changes nothing.
+          check_changes head
+          [ "$(jq -r '.base' "$WORK/suppression-changes.json")" = "$BASE" ] || fail "Expected base to be the fork point"
+          # Without code scanning, the annotations do not mention alerts.
+          SCAN_WORK_DIR="$WORK" GITHUB_EVENT_PATH="$WORK/event.json" GITHUB_WORKSPACE="$REPO" CATEGORY=bal-scan \
+            bash scripts/suppression-changes.sh > "$WORK/log.txt"
+          ! grep -q 'on main' "$WORK/log.txt" || fail "Expected no mention of code scanning, got: $(cat "$WORK/log.txt")"
+          # With suppressions off, an annotation changes nothing.
           SCAN_WORK_DIR="$WORK" GITHUB_EVENT_PATH="$WORK/event.json" GITHUB_WORKSPACE="$REPO" SUPPRESSIONS=false \
-            bash scripts/removed-suppressions.sh > "$WORK/log.txt"
-          [ "$(jq -c . "$WORK/alerts.json")" = '{}' ] || fail "Expected no check with suppressions off"
+            bash scripts/suppression-changes.sh > "$WORK/log.txt"
+          [ "$(jq -c . "$WORK/suppression-changes.json")" = '{}' ] || fail "Expected no check with suppressions off"
 
   # pr-comment.sh comments the reason of each suppressed finding on a line the pull request adds: in
   # the thread of code scanning's comment on its alert, or else at the line.
@@ -386,8 +405,9 @@ jobs:
           fail() { echo "::error::$1"; exit 1; }
           WORK="$RUNNER_TEMP/pr-comment"
           mkdir -p "$WORK/bin" "$WORK/repo" "$WORK/alerts"
-          # A fake curl. GET prints $PR_FILE, $FILES_FILE, $ALERTS_DIR/<n>.json or the comments by the
-          # URL: $COMMENTS_FILE, or $COMMENTS_FILE.later from the second read on when it exists. POST
+          # A fake curl. GET prints $PR_FILE, $FILES_FILE, $ALERTS_DIR/<n>.json, the conversation's
+          # comments from $ISSUE_COMMENTS_FILE, or the review comments by the URL: $COMMENTS_FILE, or
+          # $COMMENTS_FILE.later from the second read on when it exists. POST
           # and PATCH record the method and URL in $CALLS_FILE and the request body in $PAYLOADS_FILE.
           cat > "$WORK/bin/curl" << 'EOF'
           #!/usr/bin/env bash
@@ -402,6 +422,7 @@ jobs:
           if [ "$method" = GET ]; then
             case "$url" in
               */files) cat "$FILES_FILE" ;;
+              */issues/*/comments) cat "$ISSUE_COMMENTS_FILE" 2> /dev/null || echo '[]' ;;
               */comments)
                 echo x >> "$READS_FILE"
                 if [ -f "$COMMENTS_FILE.later" ] && [ "$(wc -l < "$READS_FILE")" -ge 2 ]; then
@@ -459,7 +480,8 @@ jobs:
             : > "$WORK/alert-reads.txt"
             PATH="$WORK/bin:$PATH" PR_FILE="$WORK/pr.json" FILES_FILE="$WORK/files.json" COMMENTS_FILE="$WORK/comments.json" \
               READS_FILE="$WORK/reads.txt" ALERT_READS_FILE="$WORK/alert-reads.txt" ALERTS_DIR="$WORK/alerts" CALLS_FILE="$WORK/calls.txt" \
-              PAYLOADS_FILE="$WORK/payloads.jsonl" SCAN_WORK_DIR="$WORK" GITHUB_TOKEN=fake GITHUB_REPOSITORY=owner/repo \
+              PAYLOADS_FILE="$WORK/payloads.jsonl" ISSUE_COMMENTS_FILE="$WORK/issue-comments.json" \
+              SCAN_WORK_DIR="$WORK" GITHUB_TOKEN=fake GITHUB_REPOSITORY=owner/repo \
               GITHUB_WORKSPACE="$WORK/repo" GITHUB_EVENT_PATH="$WORK/event.json" CATEGORY=bal-scan \
               CODE_SCANNING="${CODE_SCANNING:-true}" BOT_TIMEOUT="${BOT_TIMEOUT:-0}" BOT_POLL=1 \
               bash scripts/pr-comment.sh > "$WORK/log.txt"
@@ -534,6 +556,43 @@ jobs:
           [ ! -s "$WORK/calls.txt" ] || fail "Expected no comment on a bad response, got: $(cat "$WORK/calls.txt")"
           grep -q '^::warning.*Could not read the changes and comments of pull request #7' "$WORK/log.txt" \
             || fail "Expected a warning, got: $(cat "$WORK/log.txt")"
+
+          # One comment in the conversation lists the suppressions the pull request adds and removes,
+          # and is edited, not repeated, by later runs.
+          jq -n '[]' > "$WORK/comments.json"
+          jq -n '{branch: "main", head: "1111111", base: "2222222",
+            added: [{file: "dir/a b.bal", line: 4, text: "@scan:Suppress {rules: [\"x:1\"], reason: \"`ok` <b> @org/team\"}"}],
+            removed: [{file: "main.bal", line: 3, "base-line": 9, text: "@scan:Suppress {rules: [\"y:1\"]}"}]}' \
+            > "$WORK/suppression-changes.json"
+          run
+          grep -qxF "POST https://api.github.com/repos/owner/repo/issues/7/comments" "$WORK/calls.txt" \
+            || fail "Expected the suppression changes to be commented, got: $(cat "$WORK/calls.txt")"
+          SUMMARY="$(payload /issues/7/comments)"
+          [ "$(head -n1 <<< "$SUMMARY")" = '<!-- scan-ballerina:suppression-changes:bal-scan -->' ] \
+            || fail "Expected the summary to start with its marker, got: $SUMMARY"
+          grep -qF '**Added (1)**' <<< "$SUMMARY" && grep -qF '**Removed (1)**' <<< "$SUMMARY" \
+            || fail "Expected the added and removed counts, got: $SUMMARY"
+          grep -qxF -- "- [\`dir/a b.bal:4\`](https://github.com/owner/repo/blob/1111111/dir/a%20b.bal#L4): \`@scan:Suppress {rules: [\"x:1\"], reason: \"'ok' <b> @org/team\"}\`" <<< "$SUMMARY" \
+            || fail "Expected the added annotation in a code span, linked to the head, got: $SUMMARY"
+          grep -qxF -- '- [`main.bal:9`](https://github.com/owner/repo/blob/2222222/main.bal#L9): `@scan:Suppress {rules: ["y:1"]}`' <<< "$SUMMARY" \
+            || fail "Expected the removed annotation linked to its line in the base, got: $SUMMARY"
+          grep -qF 'dismissed on main' <<< "$SUMMARY" || fail "Expected the code scanning note, got: $SUMMARY"
+          # The same list already there: nothing is written.
+          jq -n --arg b "$SUMMARY" '[{id: 1, body: "Thanks"}, {id: 77, body: $b}]' > "$WORK/issue-comments.json"
+          run
+          ! grep -q '/issues/' "$WORK/calls.txt" || fail "Expected no change to the summary, got: $(cat "$WORK/calls.txt")"
+          # No change left: the comment says so.
+          jq '.added = [] | .removed = []' "$WORK/suppression-changes.json" > "$WORK/none.json"
+          mv "$WORK/none.json" "$WORK/suppression-changes.json"
+          run
+          grep -qxF "PATCH https://api.github.com/repos/owner/repo/issues/comments/77" "$WORK/calls.txt" \
+            || fail "Expected the summary to be edited, got: $(cat "$WORK/calls.txt")"
+          grep -qF 'no longer adds or removes' <<< "$(payload /issues/comments/77)" \
+            || fail "Expected the summary to say there is no change, got: $(payload /issues/comments/77)"
+          # Never a change: no comment is written.
+          echo '[]' > "$WORK/issue-comments.json"
+          run
+          ! grep -q '/issues/' "$WORK/calls.txt" || fail "Expected no summary without a change, got: $(cat "$WORK/calls.txt")"
 
   # The supported scan tools are 0.13.0 and later, and the 0.11.x backport of its features from
   # 0.11.1 for Ballerina 2201.12.x. 0.12.x has neither suppressions nor --exclude-tests.

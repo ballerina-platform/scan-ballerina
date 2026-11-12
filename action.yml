@@ -67,7 +67,7 @@ inputs:
     required: false
     default: 'true'
   pr-comment:
-    description: 'In pull_request and pull_request_target runs, comment the suppression''s reason of each suppressed finding on a line the pull request adds: as a reply to code scanning''s comment on its alert, waiting up to 2 minutes for it, or else as a comment of its own at that line with the finding''s message. Needs the pull-requests: write permission. Skipped in runs for pull requests from forks and Dependabot, whose token cannot comment.'
+    description: 'In pull_request and pull_request_target runs, comment the suppression''s reason of each suppressed finding on a line the pull request adds: as a reply to code scanning''s comment on its alert, waiting up to 2 minutes for it, or else as a comment of its own at that line with the finding''s message. Also keeps one comment on the pull request listing the @scan:Suppress annotations it adds and removes, edited by later runs. Needs the pull-requests: write permission. Skipped in runs for pull requests from forks and Dependabot, whose token cannot comment.'
     required: false
     default: 'true'
   platform-config:
@@ -408,20 +408,21 @@ runs:
         CATEGORY: ${{ inputs.category }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/dismiss-alerts.sh"
 
-    # Pull requests from forks and Dependabot cannot read the alerts, so the removed annotations
-    # are read from the diff instead.
-    - name: Check for removed suppressions
-      id: removed-suppressions
+    # Read from the diff, so it also works for pull requests from forks and Dependabot, which cannot
+    # read the alerts.
+    - name: Check for added and removed suppressions
+      id: suppression-changes
       if: >-
-        steps.validate.outputs.github-code-scanning == 'true' && steps.validate.outputs.restricted == 'true'
-        && github.event_name == 'pull_request' && steps.merge.outcome == 'success'
+        steps.merge.outcome == 'success'
+        && (github.event_name == 'pull_request' || github.event_name == 'pull_request_target')
       continue-on-error: true
       shell: bash
       env:
         SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
         SUPPRESSIONS: ${{ inputs.suppressions }}
+        CODE_SCANNING: ${{ steps.validate.outputs.github-code-scanning }}
         CATEGORY: ${{ inputs.category }}
-      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/removed-suppressions.sh"
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/suppression-changes.sh"
 
     # Only warns on failure, so it never fails the action.
     - name: Comment the suppressed findings on the pull request

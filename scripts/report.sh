@@ -9,7 +9,8 @@
 # Reads: $SCAN_WORK_DIR/sonarqube-failures.txt, written by scan.sh. A package whose SonarQube scan
 # failed makes the result error and fails the step here, after the SARIF file was uploaded. Also
 # reads $SCAN_WORK_DIR/scan-failures.txt, written by scan.sh, for the job summary, and
-# $SCAN_WORK_DIR/alerts.json, written by dismiss-alerts.sh.
+# $SCAN_WORK_DIR/alerts.json, written by dismiss-alerts.sh, and $SCAN_WORK_DIR/suppression-changes.json,
+# written by suppression-changes.sh.
 # Outputs: result, uploads, high-count, medium-count, low-count, total-count, packages-scanned,
 # suppressed-count.
 
@@ -179,6 +180,13 @@ if [ "$(trim "${JOB_SUMMARY:-true}")" = "true" ] && [ -n "${GITHUB_STEP_SUMMARY:
         echo "Suppressed findings, left out of the counts and the gate: $SUPPRESSED."
         echo
       fi
+      if [ -n "$WORK" ] && [ -s "$WORK/suppression-changes.json" ]; then
+        jq -r '
+          select((.added // []) + (.removed // []) | length > 0)
+          | "**This pull request adds \(.added | length) and removes \(.removed | length) `@scan:Suppress` annotation(s).** "
+            + "Added ones take their findings out of the counts and the gate, and removed ones put them back. See the annotations of the step that checks for suppression changes.\n"
+        ' "$WORK/suppression-changes.json"
+      fi
       echo "Gate: $GATE."
       if [ -n "$ANNOTATION_NOTE" ]; then
         echo
@@ -212,9 +220,6 @@ if [ "$(trim "${JOB_SUMMARY:-true}")" = "true" ] && [ -n "${GITHUB_STEP_SUMMARY:
              else "" end)
           + (if ($alerts.reintroduced // 0) > 0
              then " **\($alerts.reintroduced) finding(s) are not on \($alerts.branch), but code scanning matches them to dismissed alerts**, so it does not show them as new here. See the warnings of the step that updates the alerts."
-             else "" end)
-          + (if ($alerts.removed // 0) > 0
-             then " **This pull request removes \($alerts.removed) `@scan:Suppress` annotation(s).** Code scanning matches their findings to alerts dismissed on \($alerts.branch), so it does not show them here, and this run cannot read the alerts. See the warnings of the step that checks for removed suppressions."
              else "" end) else empty end),
         (.sonarqube[]? | "- Reported \(.package) to SonarQube project `\(."project-key")`"
           + (if ."dashboard-url" != "" then ": [dashboard](\(."dashboard-url"))" else "" end) + "."),

@@ -5,13 +5,15 @@
 # is posted as a reply in that comment's thread, once code scanning has commented, and as a comment
 # of its own at the line when code scanning does not comment in time, or at all, such as for a
 # finding matching an alert dismissed before. A comment already there is edited rather than
-# repeated, and one whose finding is no longer suppressed says so. Every failure is a warning, so
-# that it never fails the scan.
+# repeated, and one whose finding is no longer suppressed says so. It also keeps one comment in the
+# pull request's conversation listing the @scan:Suppress annotations it adds and removes. Every
+# failure is a warning, so that it never fails the scan.
 #
 # Inputs (environment): SCAN_WORK_DIR, GITHUB_TOKEN, GITHUB_REPOSITORY, GITHUB_API_URL,
-# GITHUB_WORKSPACE, GITHUB_EVENT_PATH, CATEGORY, CODE_SCANNING (true when the findings were
-# uploaded to code scanning, so that its comments are waited for).
-# Reads: $SCAN_WORK_DIR/results.json and $SCAN_WORK_DIR/merged.sarif, written by merge-sarif.sh.
+# GITHUB_SERVER_URL, GITHUB_WORKSPACE, GITHUB_EVENT_PATH, CATEGORY, CODE_SCANNING (true when the
+# findings were uploaded to code scanning, so that its comments are waited for).
+# Reads: $SCAN_WORK_DIR/results.json and $SCAN_WORK_DIR/merged.sarif, written by merge-sarif.sh, and
+# $SCAN_WORK_DIR/suppression-changes.json, written by suppression-changes.sh.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -75,6 +77,59 @@ if [ "$CURRENT" != "$HEAD_SHA" ]; then
   echo "Pull request #$NUMBER has moved on to $CURRENT, so the run for that commit comments the suppressed findings."
   exit 0
 fi
+
+# One comment in the conversation of the pull request lists the @scan:Suppress annotations it adds
+# and removes, as suppression-changes.sh found them. Later runs edit it, and none is written until
+# there is a change to list.
+post_summary() {
+  local changes="$WORK/suppression-changes.json" comments="$REPO_API/issues/$NUMBER/comments" body found
+  jq -e 'has("added")' "$changes" > /dev/null 2>&1 || return 0
+  if ! get_all "$comments" | jq -s 'add // []' > "$WORK/pr-issue-comments.json"; then
+    log_warning "Could not read the comments of pull request #$NUMBER, so the suppression changes were not listed."
+    return 0
+  fi
+  body="$(jq -r -L "$SCRIPT_DIR" --arg category "$CATEGORY_NAME" --arg short "${HEAD_SHA:0:7}" \
+    --arg server "${GITHUB_SERVER_URL:-https://github.com}" --arg repo "$GITHUB_REPOSITORY" \
+    --argjson code_scanning "$([ "${CODE_SCANNING:-false}" = true ] && echo true || echo false)" '
+    include "common";
+    # Untrusted text in a code span, which shows HTML, mentions and Markdown as they are.
+    def code: gsub("\r?\n"; " ") | gsub("`"; "'"'"'") | if length > 300 then .[0:300] + "…" else . end | "`\(.)`";
+    def item($sha; $line): "- [\("\(.file):\($line)" | code)](\($server)/\($repo)/blob/\($sha)/\(.file | uri_path)#L\($line)): \(.text | code)";
+    def list($items; f): ($items[:50] | map(f)) + (if ($items | length) > 50 then ["- …and \(($items | length) - 50) more"] else [] end);
+    . as $c
+    | ["<!-- scan-ballerina:suppression-changes:\($category) -->", "### `bal scan` suppression changes (\($category | code))", ""]
+    + if (.added | length) + (.removed | length) == 0 then
+        ["This pull request no longer adds or removes any `@scan:Suppress` annotation."]
+      else
+        (if (.added | length) > 0 then
+          ["**Added (\(.added | length))**: the findings of these rules are left out of the counts and the gate"
+            + (if $code_scanning then ", and code scanning shows no new alert for those already on \($c.branch)" else "" end)
+            + ", so each one needs a reviewer'"'"'s explicit acceptance.", ""]
+          + list(.added; item($c.head; .line))
+        else [] end)
+        + (if (.added | length) > 0 and (.removed | length) > 0 then [""] else [] end)
+        + (if (.removed | length) > 0 then
+          ["**Removed (\(.removed | length))**: the findings these suppressed are reported again"
+            + (if $code_scanning then ". Code scanning matches them to their alerts dismissed on \($c.branch), so it does not show them as new, and the action reopens the alerts when this change is merged" else "" end)
+            + ".", ""]
+          + list(.removed; item($c.base; ."base-line"))
+        else [] end)
+      end
+    + ["", "_As of \($short)._"]
+    | join("\n")' "$changes")"
+  found="$(jq -c --arg m "<!-- scan-ballerina:suppression-changes:$CATEGORY_NAME -->" \
+    'map(select((.body // "") | startswith($m))) | first // {}' "$WORK/pr-issue-comments.json")"
+  if [ "$(jq -r '.id // ""' <<< "$found")" = "" ]; then
+    jq -e '(.added | length) + (.removed | length) > 0' "$changes" > /dev/null || return 0
+    jq -n --arg body "$body" '{body: $body}' | gh_api -X POST "$comments" --data-binary @- > /dev/null \
+      || log_warning "Could not list the suppression changes on pull request #$NUMBER. The token needs the pull-requests: write permission."
+  elif [ "$(jq -r '.body' <<< "$found")" != "$body" ]; then
+    jq -n --arg body "$body" '{body: $body}' \
+      | gh_api -X PATCH "$REPO_API/issues/comments/$(jq -r '.id' <<< "$found")" --data-binary @- > /dev/null \
+      || log_warning "Could not update the list of suppression changes on pull request #$NUMBER. The token needs the pull-requests: write permission."
+  fi
+}
+post_summary
 
 load_comments() {
   get_all "$PULLS/$NUMBER/comments" | jq -s 'add // []' > "$WORK/pr-comments.json"
