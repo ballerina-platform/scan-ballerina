@@ -67,7 +67,7 @@ inputs:
     required: false
     default: 'true'
   pr-comment:
-    description: 'In pull_request and pull_request_target runs, comment the suppression''s reason of each suppressed finding on a line the pull request adds: as a reply to code scanning''s comment on its alert, waiting up to 2 minutes for it, or else as a comment of its own at that line with the finding''s message. Also comments at each @scan:Suppress annotation the pull request adds or removes for findings already on the default branch, listing those findings, edited by later runs. Needs the pull-requests: write permission. Skipped in runs for pull requests from forks and Dependabot, whose token cannot comment.'
+    description: 'In pull_request and pull_request_target runs, comment the suppression''s reason of each suppressed finding on a line the pull request adds: as a reply to code scanning''s comment on its alert, waiting up to 2 minutes for it, or else as a comment of its own at that line with the finding''s message. Also comments at each @scan:Suppress annotation the pull request adds or removes for findings already on the default branch, naming their rules and the reason, edited by later runs. Needs the pull-requests: write permission. Skipped in runs for pull requests from forks and Dependabot, whose token cannot comment.'
     required: false
     default: 'true'
   platform-config:

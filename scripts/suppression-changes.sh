@@ -4,9 +4,9 @@
 # scanning shows neither when the finding is already on the base branch: a finding newly suppressed
 # keeps its open alert, and one whose suppression is removed matches its alert dismissed on the
 # default branch. Each one is a warning, the only one for that change: an added annotation takes
-# findings out of the gate and needs a reviewer's acceptance, and a removed one counts them again.
+# findings out of the gate as soon as it is pushed, and a removed one counts them again.
 # dismiss-alerts.sh, which runs after it, does not warn again at the findings of a removed one.
-# pr-comment.sh lists both in a comment on the pull request. Annotations are matched by their
+# pr-comment.sh comments both on the pull request. Annotations are matched by their
 # rules, so one that is moved or has only its reason changed is neither added nor removed. Needs no
 # token beyond reading the base repository. Every failure is a log line, so that it never fails the
 # scan.
