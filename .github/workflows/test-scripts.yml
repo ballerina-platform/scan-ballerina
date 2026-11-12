@@ -386,7 +386,7 @@ jobs:
           fail() { echo "::error::$1"; exit 1; }
           WORK="$RUNNER_TEMP/pr-comment"
           mkdir -p "$WORK/bin" "$WORK/repo" "$WORK/alerts"
-          # A fake curl. GET prints $PR_FILE, $FILES_FILE, $WORK/alerts/<n>.json or the comments by the
+          # A fake curl. GET prints $PR_FILE, $FILES_FILE, $ALERTS_DIR/<n>.json or the comments by the
           # URL: $COMMENTS_FILE, or $COMMENTS_FILE.later from the second read on when it exists. POST
           # and PATCH record the method and URL in $CALLS_FILE and the request body in $PAYLOADS_FILE.
           cat > "$WORK/bin/curl" << 'EOF'
@@ -410,7 +410,7 @@ jobs:
                   cat "$COMMENTS_FILE"
                 fi
                 ;;
-              */code-scanning/alerts/*) echo "${url##*/}" >> "$ALERT_READS_FILE" && cat "$WORK/alerts/${url##*/}.json" ;;
+              */code-scanning/alerts/*) echo "${url##*/}" >> "$ALERT_READS_FILE" && cat "$ALERTS_DIR/${url##*/}.json" ;;
               *) cat "$PR_FILE" ;;
             esac
             exit 0
@@ -458,7 +458,7 @@ jobs:
             : > "$WORK/reads.txt"
             : > "$WORK/alert-reads.txt"
             PATH="$WORK/bin:$PATH" PR_FILE="$WORK/pr.json" FILES_FILE="$WORK/files.json" COMMENTS_FILE="$WORK/comments.json" \
-              READS_FILE="$WORK/reads.txt" ALERT_READS_FILE="$WORK/alert-reads.txt" CALLS_FILE="$WORK/calls.txt" \
+              READS_FILE="$WORK/reads.txt" ALERT_READS_FILE="$WORK/alert-reads.txt" ALERTS_DIR="$WORK/alerts" CALLS_FILE="$WORK/calls.txt" \
               PAYLOADS_FILE="$WORK/payloads.jsonl" SCAN_WORK_DIR="$WORK" GITHUB_TOKEN=fake GITHUB_REPOSITORY=owner/repo \
               GITHUB_WORKSPACE="$WORK/repo" GITHUB_EVENT_PATH="$WORK/event.json" CATEGORY=bal-scan \
               CODE_SCANNING="${CODE_SCANNING:-true}" BOT_TIMEOUT="${BOT_TIMEOUT:-0}" BOT_POLL=1 \
