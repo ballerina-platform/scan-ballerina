@@ -117,11 +117,10 @@ PLAN='
   def safe: gsub("\r?\n"; " ") | gsub("<"; "&lt;") | gsub(">"; "&gt;") | gsub("@"; "@​");
   def clip($n): if length > $n then .[0:$n] + "…" else . end;
   def reason: if .justification == "" then "_No reason given_" else .justification | clip(1000) | safe end;
-  def header: "**Suppressed in source with `@scan:Suppress`** (bal scan, \($category | safe))";
-  def reply_body: [marker(.), header, "", "**Reason:** \(reason)", "",
-    "The alert above is not dismissed automatically. A repository owner can dismiss it after review."] | join("\n");
-  def own_body: [marker(.), header, "", "> **\(.severity)** `\(.rule)`: \(.message | clip(1000) | safe)", ">", "> **Reason:** \(reason)", "",
-    "Code scanning still reports this finding, and its alert is not dismissed automatically. A repository owner can dismiss it after review."] | join("\n");
+  def header: "**Suppression detected**";
+  def note: "_A `bal scan` suppression (`@scan:Suppress`) is not dismissed automatically in pull requests, so it needs a reviewer'"'"'s explicit acceptance. Its alert is dismissed only by the scan of the default branch after the merge._";
+  def reply_body: [marker(.), header, "", "**Reason:** \(reason)", "", note] | join("\n");
+  def own_body: [marker(.), header, "", "> **\(.severity)** `\(.rule)`: \(.message | clip(1000) | safe)", ">", "> **Reason:** \(reason)", "", note] | join("\n");
   ($comments[0] | map(select((.body // "") | startswith("<!-- scan-ballerina:suppression:\($category):")))) as $ours
   | ($comments[0] | map(select(.user.login == $bot and .in_reply_to_id == null)
       | . + {alert: ((.body // "") | [capture("/security/code-scanning/(?<n>[0-9]+)").n] | first | $alerts[0][. // ""])})
