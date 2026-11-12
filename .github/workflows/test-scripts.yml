@@ -98,18 +98,18 @@ jobs:
         run: |
           set -euo pipefail
           fail() { echo "::error::$1"; exit 1; }
-          # Usage: merge NAME SUPPRESSIONS DISMISS_ALERTS [GITHUB_CODE_SCANNING]
+          # Usage: merge NAME SUPPRESSIONS
           merge() {
             local work="$RUNNER_TEMP/sarif-$1"
             mkdir -p "$work"
             cp -r test/sarif/suppressed/units.json test/sarif/suppressed/reports "$work/"
             : > "$work/output.txt"
-            SCAN_WORK_DIR="$work" EXCLUDE_PATHS= CATEGORY="$1" SUPPRESSIONS="$2" DISMISS_ALERTS="$3" \
-              GITHUB_CODE_SCANNING="${4:-true}" GITHUB_OUTPUT="$work/output.txt" bash scripts/merge-sarif.sh
+            SCAN_WORK_DIR="$work" EXCLUDE_PATHS= CATEGORY="$1" SUPPRESSIONS="$2" \
+              GITHUB_OUTPUT="$work/output.txt" bash scripts/merge-sarif.sh
           }
           output() { grep "^$2=" "$RUNNER_TEMP/sarif-$1/output.txt" | cut -d= -f2-; }
 
-          merge suppressed '' false
+          merge suppressed ''
           W="$RUNNER_TEMP/sarif-suppressed"
           COUNTS="$(output suppressed high-count) $(output suppressed low-count) $(output suppressed total-count) $(output suppressed suppressed-count)"
           [ "$COUNTS" = "1 2 3 2" ] || fail "Expected 1 high, 2 low, 3 counted and 2 suppressed findings, got $COUNTS"
@@ -117,26 +117,15 @@ jobs:
             || fail "Every result of the merged run must have suppressions"
           jq -e '[.runs[0].results[] | select(.locations[0].physicalLocation.artifactLocation.uri == "lib/lib.bal") | .suppressions] == [[]]' \
             "$W/suppressed.sarif" > /dev/null || fail "A result without suppressions must get an empty array"
+          # The SARIF file is also what code scanning gets, so pull requests show the suppressed findings.
           [ "$(jq '.runs[0].results | length' "$W/suppressed.sarif")" = 5 ] || fail "The SARIF file must keep the suppressed results"
-          [ "$(output suppressed upload-file)" != "$(output suppressed sarif-file)" ] || fail "Off the default branch, the upload must be a separate file"
-          [ "$(jq -c '[.runs[0].results[].locations[0].physicalLocation.region.startLine]' "$(output suppressed upload-file)")" = '[12,20,2]' ] \
-            || fail "The upload must leave out the suppressed results only"
+          ! grep -q '^upload-file=' "$W/output.txt" || fail "No separate upload file must be written"
           [ "$(jq -r '[.[] | select(.suppressed) | .justification] | join("|")' "$W/results.json")" = 'Legacy hash kept for the migration window, SEC-1042|' ] \
             || fail "results.json must keep each suppression's justification"
 
-          merge dismissed '' true
-          [ "$(output dismissed upload-file)" = "$(output dismissed sarif-file)" ] \
-            || fail "On the default branch, the upload must keep the suppressed results, so that their alerts can be dismissed"
-
-          # Without github-code-scanning nothing is uploaded, so no separate file is written.
-          merge no-gcs '' false false
-          [ "$(output no-gcs upload-file)" = "$(output no-gcs sarif-file)" ] \
-            || fail "Without github-code-scanning, no upload file must be written"
-
-          merge ignored false false
+          merge ignored false
           COUNTS="$(output ignored total-count) $(output ignored suppressed-count)"
           [ "$COUNTS" = "5 0" ] || fail "suppressions: false must count every finding, got $COUNTS"
-          [ "$(output ignored upload-file)" = "$(output ignored sarif-file)" ] || fail "suppressions: false must upload every result"
 
       - name: Validate the merged files against the SARIF 2.1.0 schema
         shell: bash
@@ -144,8 +133,7 @@ jobs:
           set -euo pipefail
           curl -fsSL -o "$RUNNER_TEMP/sarif-schema.json" https://json.schemastore.org/sarif-2.1.0.json
           pipx run check-jsonschema --schemafile "$RUNNER_TEMP/sarif-schema.json" \
-            "$RUNNER_TEMP/sarif-golden/golden.sarif" "$RUNNER_TEMP/sarif-suppressed/suppressed.sarif" \
-            "$RUNNER_TEMP/sarif-suppressed/upload/suppressed.sarif"
+            "$RUNNER_TEMP/sarif-golden/golden.sarif" "$RUNNER_TEMP/sarif-suppressed/suppressed.sarif"
 
   # alert-changes.jq picks the code scanning alerts to dismiss, record, reopen and set to fixed on
   # the default branch, and the dismissed alerts of unsuppressed findings off it. The alerts are
@@ -383,22 +371,22 @@ jobs:
             bash scripts/removed-suppressions.sh > "$WORK/log.txt"
           [ "$(jq -c . "$WORK/alerts.json")" = '{}' ] || fail "Expected no check with suppressions off"
 
-  # pr-comment.sh keeps one comment per category on the pull request, found by its marker.
+  # pr-comment.sh comments each suppressed finding on a line the pull request adds, at that line.
   pr-comment:
-    name: Pull request comment
+    name: Pull request comments
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      - name: Check the comment created, updated and left alone
+      - name: Check the comments created, updated and left alone
         shell: bash
         run: |
           set -euo pipefail
           fail() { echo "::error::$1"; exit 1; }
           WORK="$RUNNER_TEMP/pr-comment"
-          mkdir -p "$WORK/bin"
-          # A fake curl. GET prints $COMMENTS_FILE; POST and PATCH record the method and URL in
-          # $CALLS_FILE and the request body in $PAYLOAD_FILE.
+          mkdir -p "$WORK/bin" "$WORK/repo"
+          # A fake curl. GET prints $PR_FILE, $FILES_FILE or $COMMENTS_FILE by the URL; POST and PATCH
+          # record the method and URL in $CALLS_FILE and the request body in $PAYLOADS_FILE.
           cat > "$WORK/bin/curl" << 'EOF'
           #!/usr/bin/env bash
           method=GET url=""
@@ -409,66 +397,92 @@ jobs:
               *) shift ;;
             esac
           done
-          if [ "$method" = GET ]; then cat "$COMMENTS_FILE"; exit 0; fi
+          if [ "$method" = GET ]; then
+            case "$url" in
+              */files) cat "$FILES_FILE" ;;
+              */comments) cat "$COMMENTS_FILE" ;;
+              *) cat "$PR_FILE" ;;
+            esac
+            exit 0
+          fi
           echo "$method $url" >> "$CALLS_FILE"
-          cat > "$PAYLOAD_FILE"
+          cat >> "$PAYLOADS_FILE"
+          echo >> "$PAYLOADS_FILE"
           echo '{}'
           EOF
           chmod +x "$WORK/bin/curl"
-          echo '{"pull_request": {"number": 7}}' > "$WORK/event.json"
-          MARKER='<!-- scan-ballerina:suppressions:bal-scan -->'
+          echo '{"pull_request": {"number": 7, "head": {"sha": "0123456789abcdef"}}}' > "$WORK/event.json"
+          printf '%s\n' 'import ballerina/scan;' '' '@scan:Suppress {rules: ["ballerina:1"]}' 'function a() returns int {' \
+            '    return checkpanic int:fromString("1");' '}' 'function b() returns int {' \
+            '    return checkpanic int:fromString("2");' '}' > "$WORK/repo/main.bal"
+          # The pull request adds lines 3 to 6, but its line 4 differs from the checked out one, as
+          # when the base branch changed the file since.
+          jq -n '[{filename: "main.bal", patch: "@@ -1,2 +1,6 @@\n import ballerina/scan;\n \n+@scan:Suppress {rules: [\"ballerina:1\"]}\n+function a() returns int { // changed on the base\n+    return checkpanic int:fromString(\"1\");\n+}"}]' \
+            > "$WORK/files.json"
+          # Line 5: two suppressed findings on an added line, commented together. Line 4: its text
+          # differs from the head's. Line 8: not added. Line 1: not suppressed. Severity none: not counted.
           jq -n '[
-            {severity: "low", rule: "ballerina:1", file: "a b/main.bal", line: 4, suppressed: true, justification: "Kept | for <now>\nfor now"},
-            {severity: "high", rule: "ballerina/crypto:2", file: "main.bal", line: 9, suppressed: true, justification: ""},
-            {severity: "none", rule: "ballerina:9", file: "main.bal", line: 1, suppressed: true, justification: "Not counted"},
-            {severity: "high", rule: "ballerina:3", file: "main.bal", line: 2, suppressed: false, justification: ""}]' \
+            {severity: "low", rule: "ballerina:1", message: "Avoid checkpanic", file: "main.bal", line: 5, suppressed: true, justification: "Checked by <gateway>, ask @org/team"},
+            {severity: "medium", rule: "ballerina:7", message: "Line\nbreak", file: "main.bal", line: 5, suppressed: true, justification: ""},
+            {severity: "low", rule: "ballerina:3", message: "m", file: "main.bal", line: 4, suppressed: true, justification: "r"},
+            {severity: "low", rule: "ballerina:4", message: "m", file: "main.bal", line: 8, suppressed: true, justification: "r"},
+            {severity: "high", rule: "ballerina:2", message: "m", file: "main.bal", line: 1, suppressed: false, justification: ""},
+            {severity: "none", rule: "ballerina:9", message: "m", file: "main.bal", line: 5, suppressed: true, justification: "r"}]' \
             > "$WORK/results.json"
+          MARKER='<!-- scan-ballerina:suppression:bal-scan -->'
           run() {
             : > "$WORK/calls.txt"
-            rm -f "$WORK/payload.json"
-            PATH="$WORK/bin:$PATH" COMMENTS_FILE="$WORK/comments.json" CALLS_FILE="$WORK/calls.txt" \
-              PAYLOAD_FILE="$WORK/payload.json" SCAN_WORK_DIR="$WORK" GITHUB_TOKEN=fake GITHUB_REPOSITORY=owner/repo \
-              GITHUB_SHA=0123456789abcdef GITHUB_WORKSPACE="$RUNNER_TEMP" GITHUB_EVENT_PATH="$WORK/event.json" \
+            : > "$WORK/payloads.jsonl"
+            PATH="$WORK/bin:$PATH" PR_FILE="$WORK/pr.json" FILES_FILE="$WORK/files.json" COMMENTS_FILE="$WORK/comments.json" \
+              CALLS_FILE="$WORK/calls.txt" PAYLOADS_FILE="$WORK/payloads.jsonl" SCAN_WORK_DIR="$WORK" GITHUB_TOKEN=fake \
+              GITHUB_REPOSITORY=owner/repo GITHUB_WORKSPACE="$WORK/repo" GITHUB_EVENT_PATH="$WORK/event.json" \
               CATEGORY=bal-scan bash scripts/pr-comment.sh > "$WORK/log.txt"
           }
+          echo '{"head": {"sha": "0123456789abcdef"}}' > "$WORK/pr.json"
 
-          # No comment yet: one is created, with the counted suppressed findings, high first.
-          echo '[{"id": 1, "body": "Looks good"}]' > "$WORK/comments.json"
+          # No comment yet: one comment at line 5 of the head, with both findings.
+          echo '[{"id": 1, "path": "main.bal", "line": 5, "body": "Looks good"}]' > "$WORK/comments.json"
           run
-          [ "$(cat "$WORK/calls.txt")" = "POST https://api.github.com/repos/owner/repo/issues/7/comments" ] \
-            || fail "Expected a new comment, got: $(cat "$WORK/calls.txt")"
-          BODY="$(jq -r .body "$WORK/payload.json")"
+          [ "$(cat "$WORK/calls.txt")" = "POST https://api.github.com/repos/owner/repo/pulls/7/comments" ] \
+            || fail "Expected one new comment, got: $(cat "$WORK/calls.txt")"
+          jq -e '.path == "main.bal" and .line == 5 and .side == "RIGHT" and .commit_id == "0123456789abcdef"' "$WORK/payloads.jsonl" > /dev/null \
+            || fail "Expected the comment at line 5 of the head, got: $(cat "$WORK/payloads.jsonl")"
+          BODY="$(jq -r .body "$WORK/payloads.jsonl")"
           [ "$(head -n1 <<< "$BODY")" = "$MARKER" ] || fail "Expected the marker first, got: $BODY"
-          grep -qF '2 suppressed finding(s)' <<< "$BODY" || fail "Expected two findings, got: $BODY"
-          ROWS="$(grep '^| [a-z]' <<< "$BODY" | grep -v '^| Severity')"
-          [ "$(grep -c . <<< "$ROWS")" -eq 2 ] || fail "Expected two rows, got: $ROWS"
-          [ "$(head -n1 <<< "$ROWS")" = '| high | `ballerina/crypto:2` | [main.bal:9](https://github.com/owner/repo/blob/0123456789abcdef/main.bal#L9) | _No reason given_ |' ] \
-            || fail "Unexpected first row: $(head -n1 <<< "$ROWS")"
-          [ "$(tail -n1 <<< "$ROWS")" = '| low | `ballerina:1` | [a b/main.bal:4](https://github.com/owner/repo/blob/0123456789abcdef/a%20b/main.bal#L4) | Kept \| for &lt;now&gt; for now |' ] \
-            || fail "Unexpected second row: $(tail -n1 <<< "$ROWS")"
+          grep -qxF '> **low** `ballerina:1`: Avoid checkpanic' <<< "$BODY" || fail "Expected the first finding's message, got: $BODY"
+          grep -qxF "$(printf '> **Reason:** Checked by &lt;gateway&gt;, ask @​org/team')" <<< "$BODY" \
+            || fail "Expected the reason without HTML or a mention, got: $BODY"
+          grep -qxF '> **medium** `ballerina:7`: Line break' <<< "$BODY" || fail "Expected the second finding on one line, got: $BODY"
+          grep -qxF '> **Reason:** _No reason given_' <<< "$BODY" || fail "Expected a missing reason to be said, got: $BODY"
+          ! grep -qE 'ballerina:[2-9]`: m$' <<< "$BODY" || fail "Expected no other finding, got: $BODY"
 
-          # The comment with the marker is edited in place.
-          jq -n --arg m "$MARKER" '[{id: 1, body: "Looks good"}, {id: 55, body: "\($m)\nold"}]' > "$WORK/comments.json"
+          # The same comment already there: nothing is written.
+          jq -n --arg b "$BODY" '[{id: 55, path: "main.bal", line: 5, body: $b}]' > "$WORK/comments.json"
           run
-          [ "$(cat "$WORK/calls.txt")" = "PATCH https://api.github.com/repos/owner/repo/issues/comments/55" ] \
-            || fail "Expected comment 55 to be edited, got: $(cat "$WORK/calls.txt")"
+          [ ! -s "$WORK/calls.txt" ] || fail "Expected no change, got: $(cat "$WORK/calls.txt")"
 
-          # Once nothing is suppressed, the existing comment says so, and no comment is created.
-          jq 'map(.suppressed = false)' "$WORK/results.json" > "$WORK/none.json" && mv "$WORK/none.json" "$WORK/results.json"
+          # A changed comment is edited, and a current one whose line has no suppressed finding says so.
+          # An outdated one, without a line, is left alone.
+          jq -n --arg m "$MARKER" '[{id: 55, path: "main.bal", line: 5, body: "\($m)\nold"},
+            {id: 56, path: "main.bal", line: 3, body: "\($m)\nold"}, {id: 57, path: "main.bal", line: null, body: "\($m)\nold"}]' \
+            > "$WORK/comments.json"
           run
-          [ "$(cat "$WORK/calls.txt")" = "PATCH https://api.github.com/repos/owner/repo/issues/comments/55" ] \
-            || fail "Expected comment 55 to be edited, got: $(cat "$WORK/calls.txt")"
-          jq -r .body "$WORK/payload.json" | grep -qF 'reports no suppressed finding' \
-            || fail "Expected the comment to say nothing is suppressed, got: $(jq -r .body "$WORK/payload.json")"
-          echo '[]' > "$WORK/comments.json"
+          [ "$(sort "$WORK/calls.txt" | paste -sd ' ')" = "PATCH https://api.github.com/repos/owner/repo/pulls/comments/55 PATCH https://api.github.com/repos/owner/repo/pulls/comments/56" ] \
+            || fail "Expected comments 55 and 56 to be edited, got: $(cat "$WORK/calls.txt")"
+          jq -rs '.[1].body' "$WORK/payloads.jsonl" | grep -qF 'is no longer suppressed, as of 0123456.' \
+            || fail "Expected comment 56 to say it is no longer suppressed, got: $(cat "$WORK/payloads.jsonl")"
+
+          # A newer push: its own run comments.
+          echo '{"head": {"sha": "fedcba9876543210"}}' > "$WORK/pr.json"
           run
-          [ ! -s "$WORK/calls.txt" ] || fail "Expected no comment, got: $(cat "$WORK/calls.txt")"
+          [ ! -s "$WORK/calls.txt" ] || fail "Expected no comment for an older head, got: $(cat "$WORK/calls.txt")"
+          echo '{"head": {"sha": "0123456789abcdef"}}' > "$WORK/pr.json"
 
           # A response that cannot be read warns, and comments nothing.
           echo 'not json' > "$WORK/comments.json"
           run
           [ ! -s "$WORK/calls.txt" ] || fail "Expected no comment on a bad response, got: $(cat "$WORK/calls.txt")"
-          grep -q '^::warning.*Could not read the comments of pull request #7' "$WORK/log.txt" \
+          grep -q '^::warning.*Could not read the changes and comments of pull request #7' "$WORK/log.txt" \
             || fail "Expected a warning, got: $(cat "$WORK/log.txt")"
 
   # The supported scan tools are 0.13.0 and later, and the 0.11.x backport of its features from

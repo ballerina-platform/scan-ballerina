@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
 # Step 7: normalizes the package reports, merges them into one SARIF file and counts the findings.
 #
-# Inputs (environment): SCAN_WORK_DIR, EXCLUDE_PATHS, SUPPRESSIONS, GITHUB_CODE_SCANNING (true
-# when the findings are uploaded to code scanning), DISMISS_ALERTS (true when dismiss-alerts.sh
-# dismisses alerts after the upload), CATEGORY.
+# Inputs (environment): SCAN_WORK_DIR, EXCLUDE_PATHS, SUPPRESSIONS, CATEGORY.
 # Writes: the merged SARIF file, $SCAN_WORK_DIR/results.json, every result, and
 # $SCAN_WORK_DIR/findings.json, the counted findings: those that are not suppressed.
-# Outputs: sarif-file, upload-file (the SARIF file to upload to code scanning), high-count,
-# medium-count, low-count, total-count, suppressed-count.
+# Outputs: sarif-file, high-count, medium-count, low-count, total-count, suppressed-count.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -73,28 +70,15 @@ LOW="$(count low)"
 TOTAL=$((HIGH + MEDIUM + LOW))
 SUPPRESSED="$(jq '[.[] | select(.suppressed and .severity != "none")] | length' "$WORK/results.json")"
 
-# Code scanning ignores SARIF suppressions. On the default branch dismiss-alerts.sh dismisses the
-# alerts of suppressed results after the upload; elsewhere they are left out of the upload.
-UPLOAD="$SARIF"
-if [ "${GITHUB_CODE_SCANNING:-false}" = true ] && [ "${DISMISS_ALERTS:-false}" != true ] \
-  && jq -e 'any(.[]; .suppressed)' "$WORK/results.json" > /dev/null; then
-  mkdir -p "$WORK/upload"
-  UPLOAD="$WORK/upload/$(safe_category).sarif"
-  jq -L "$SCRIPT_DIR" 'include "common"; .runs |= map(.results |= map(select(suppressed | not)))' "$SARIF" > "$UPLOAD"
-fi
-
 # Paths in outputs use the runner's native form, so later steps on Windows can read them.
 SARIF_OUT="$SARIF"
-UPLOAD_OUT="$UPLOAD"
 if command -v cygpath > /dev/null 2>&1; then
   SARIF_OUT="$(cygpath -w "$SARIF")"
-  UPLOAD_OUT="$(cygpath -w "$UPLOAD")"
 fi
 
 echo "bal scan '${CATEGORY:-bal-scan}': $HIGH high, $MEDIUM medium, $LOW low severity finding(s), $SUPPRESSED suppressed"
 echo "SARIF file: $SARIF_OUT"
 set_output sarif-file "$SARIF_OUT"
-set_output upload-file "$UPLOAD_OUT"
 set_output high-count "$HIGH"
 set_output medium-count "$MEDIUM"
 set_output low-count "$LOW"

@@ -67,7 +67,7 @@ inputs:
     required: false
     default: 'true'
   pr-comment:
-    description: 'In pull_request and pull_request_target runs, keep one comment on the pull request that lists the suppressed findings with their reasons, edited in place on each run. Needs the pull-requests: write permission. Skipped in runs for pull requests from forks and Dependabot, whose token cannot comment.'
+    description: 'In pull_request and pull_request_target runs, comment each suppressed finding on a line the pull request adds, at that line, with the finding''s message and the suppression''s reason. Needs the pull-requests: write permission. Skipped in runs for pull requests from forks and Dependabot, whose token cannot comment.'
     required: false
     default: 'true'
   platform-config:
@@ -377,8 +377,6 @@ runs:
         SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
         EXCLUDE_PATHS: ${{ inputs.exclude-paths }}
         SUPPRESSIONS: ${{ inputs.suppressions }}
-        GITHUB_CODE_SCANNING: ${{ steps.validate.outputs.github-code-scanning }}
-        DISMISS_ALERTS: ${{ steps.validate.outputs.update-alerts == 'true' && steps.validate.outputs.default-branch == 'true' }}
         CATEGORY: ${{ inputs.category }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/merge-sarif.sh"
 
@@ -390,7 +388,7 @@ runs:
       continue-on-error: ${{ steps.validate.outputs.restricted == 'true' && github.event_name != 'pull_request' }}
       uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
       with:
-        sarif_file: ${{ steps.merge.outputs.upload-file }}
+        sarif_file: ${{ steps.merge.outputs.sarif-file }}
         category: ${{ inputs.category }}
         token: ${{ inputs.github-token }}
 
