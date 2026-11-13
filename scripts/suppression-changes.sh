@@ -12,7 +12,8 @@
 # scan.
 #
 # Inputs (environment): SCAN_WORK_DIR, GITHUB_EVENT_PATH, GITHUB_WORKSPACE, SUPPRESSIONS,
-# CODE_SCANNING (true when the findings go to code scanning), CATEGORY.
+# EXCLUDE_PATHS, EXCLUDE_TESTS, CODE_SCANNING (true when the findings go to code scanning), CATEGORY.
+# Reads: $SCAN_WORK_DIR/units.json, written by find-packages.sh.
 # Writes: $SCAN_WORK_DIR/suppression-changes.json, {} when nothing was checked, and otherwise
 # {branch, head, base, added, removed}: head and base are the commits compared, and each change is
 # {file, line, text}, with line in head. A removed one also has base-line, its line in base.
@@ -27,6 +28,7 @@ echo '{}' > "$OUT"
 # With suppressions off no finding is suppressed, so an annotation changes nothing.
 [ "$(bool_setting "${SUPPRESSIONS:-}")" = true ] || exit 0
 BASE="$(jq -r '.pull_request.base.sha // ""' "${GITHUB_EVENT_PATH:-/dev/null}" 2> /dev/null || true)"
+PR_HEAD="$(jq -r '.pull_request.head.sha // ""' "${GITHUB_EVENT_PATH:-/dev/null}" 2> /dev/null || true)"
 BRANCH="$(jq -r '.repository.default_branch // ""' "${GITHUB_EVENT_PATH:-/dev/null}" 2> /dev/null || true)"
 [ -n "$BASE" ] && [ -n "$BRANCH" ] || exit 0
 cd "$(workspace_root)" || exit 0
@@ -39,10 +41,12 @@ fetch_commit() {
 }
 
 # Only the pull request's own changes count, not those on the base branch since BASE. Against the
-# first parent of the merge commit GitHub checks out by default, and otherwise against the fork
-# point of the checked out commit. A commit object lists its parents even in a shallow checkout.
+# first parent of the merge commit GitHub checks out by default, whose second parent is the pull
+# request's head, and otherwise against the fork point of the checked out commit, which may be
+# another merge, such as of the base into the pull request. A commit object lists its parents even
+# in a shallow checkout.
 read -r -a PARENTS <<< "$(git cat-file -p HEAD 2> /dev/null | sed -n 's/^parent //p' | paste -sd ' ' -)"
-if [ "${#PARENTS[@]}" -eq 2 ]; then
+if [ "${#PARENTS[@]}" -eq 2 ] && [ -n "$PR_HEAD" ] && [ "${PARENTS[1]}" = "$PR_HEAD" ]; then
   FROM="${PARENTS[0]}"
   if ! fetch_commit "$FROM"; then
     echo "Could not fetch the base commit $FROM, so suppression changes are not checked."
@@ -60,7 +64,23 @@ else
       || { echo "Could not find where the pull request branched off $BASE, so suppression changes are not checked." && exit 0; }
   fi
 fi
-if ! DIFF="$(git diff --no-color --no-ext-diff --unified=0 "$FROM" HEAD -- '*.bal')"; then
+# Only the sources the scan reads: the units' Ballerina files, without excluded paths, nor tests
+# when they are excluded.
+PATHSPECS=()
+while IFS= read -r spec; do
+  if [ -n "$spec" ]; then PATHSPECS+=("$spec"); fi
+done < <(jq -r -L "$SCRIPT_DIR" 'include "common";
+  .[] | .path | package_path | if . == "." then ":(glob)**/*.bal" else ":(glob)\(.)/**/*.bal" end' \
+  "$WORK/units.json" 2> /dev/null || true)
+[ "${#PATHSPECS[@]}" -gt 0 ] || PATHSPECS=('*.bal')
+[ "$(bool_setting "${EXCLUDE_TESTS:-}")" = false ] || PATHSPECS+=(':(glob,exclude)**/tests/**')
+while IFS= read -r glob; do
+  glob="${glob#./}"
+  glob="${glob%/}"
+  if [ -n "$glob" ]; then PATHSPECS+=(":(glob,exclude)$glob" ":(glob,exclude)$glob/**"); fi
+done < <(split_list "${EXCLUDE_PATHS:-}")
+# Paths unquoted, so that a name with other than ASCII is read as it is.
+if ! DIFF="$(git -c core.quotePath=false diff --no-color --no-ext-diff --unified=0 "$FROM" HEAD -- "${PATHSPECS[@]}")"; then
   echo "Could not compare with the base commit $FROM, so suppression changes are not checked."
   exit 0
 fi
@@ -72,7 +92,8 @@ fi
 CHANGES="$(awk '
   function norm(s) { gsub(/[ \t]+/, "", s); return s }
   function rules(s) { return match(s, /rules[ \t]*:[ \t]*\[[^]]*\]/) ? norm(substr(s, RSTART, RLENGTH)) : norm(s) }
-  function depth(s,   o) { o = gsub(/\{/, "{", s); return o - gsub(/\}/, "}", s) }
+  # Braces inside strings, such as in a reason, do not count.
+  function depth(s,   o) { gsub(/"([^"\\]|\\.)*"/, "", s); o = gsub(/\{/, "{", s); return o - gsub(/\}/, "}", s) }
   function begin(text) { sign = c; buf = text; start = (c == "+" ? cur : line); base = (c == "-" ? ocur : 0) }
   function finish() {
     if (sign == "") return
@@ -80,7 +101,8 @@ CHANGES="$(awk '
     gsub(/[ \t]+/, " ", buf); txt[n] = buf; count[sign, key[n]]++
     sign = ""
   }
-  /^\+\+\+ / { finish(); file = ($0 == "+++ /dev/null") ? "" : substr($0, 7); next }
+  # Git ends the name with a tab when it has a space.
+  /^\+\+\+ / { finish(); file = ($0 == "+++ /dev/null") ? "" : substr($0, 7); sub(/\t$/, "", file); next }
   /^--- / { finish(); next }
   # A hunk that only removes lines gives the line before it, so the next one is where they were.
   /^@@ / { finish(); split($2, o, ","); split($3, h, ","); oline = substr(o[1], 2); line = substr(h[1], 2) + (h[2] == "0" ? 1 : 0); next }
@@ -114,9 +136,9 @@ while IFS=$'\t' read -r sign file line base_line text; do
   [ -n "$file" ] || continue
   if [ "$sign" = + ]; then
     ADDED=$((ADDED + 1))
-    message="$(jq -rn --arg t "$text" '
-      ($t | capture("rules\\s*:\\s*\\[(?<r>[^\\]]*)\\]").r // "" | [scan("\"([^\"]*)\"")[0]]) as $rules
-      | ($t | capture("reason\\s*:\\s*\"(?<r>(\\\\.|[^\"\\\\])*)\"").r // "") as $reason
+    message="$(jq -rn -L "$SCRIPT_DIR" --arg t "$text" 'include "common";
+      ($t | suppress_rules) as $rules
+      | ($t | suppress_reason // "") as $reason
       | "Suppressed rule\(if ($rules | length) > 1 then "s" else "" end): \(if $rules == [] then "not specified" else $rules | join(", ") end)",
         "Suppressed reason: \(if $reason == "" then "not given" else $reason end)",
         "Its findings are left out of the counts and the gate as soon as it is pushed, whether or not a reviewer accepts it."')"

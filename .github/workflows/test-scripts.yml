@@ -361,7 +361,8 @@ jobs:
           printf '%s\n' 'function h() {}' > "$REPO/other.bal"
           git -C "$REPO" commit -qam "base moves on"
           git -C "$REPO" merge -q --no-ff pr -m merge
-          jq -n --arg sha "$BASE" '{repository: {default_branch: "main"}, pull_request: {base: {sha: $sha}}}' > "$WORK/event.json"
+          jq -n --arg sha "$BASE" --arg head "$(git -C "$REPO" rev-parse pr)" \
+            '{repository: {default_branch: "main"}, pull_request: {base: {sha: $sha}, head: {sha: $head}}}' > "$WORK/event.json"
           # Usage: check_changes NAME, on the commit checked out in $REPO.
           check_changes() {
             SCAN_WORK_DIR="$WORK" GITHUB_EVENT_PATH="$WORK/event.json" GITHUB_WORKSPACE="$REPO" CATEGORY=bal-scan CODE_SCANNING=true \
@@ -601,7 +602,7 @@ jobs:
           NEW="$(jq -sr '.[] | select(.path == "svc.bal" and .line == 7 and .side == "RIGHT") | .body' "$WORK/payloads.jsonl")"
           [ "$(head -n1 <<< "$ADDED")" = '<!-- scan-ballerina:suppression-change:bal-scan:added -->' ] \
             || fail "Expected a comment at the added x:1 annotation, got: $(cat "$WORK/payloads.jsonl")"
-          [ "$(tail -n +2 <<< "$ADDED")" = "$(printf '%s\n' '**New suppression added**' '' '**Rule:** `x:1`' '' '**Reason:** Ok')" ] \
+          [ "$(tail -n +2 <<< "$ADDED")" = "$(printf '%s\n' '**New suppression added**' '' '**Rule:** `x:1`' '' '**Reason:** Ok' '' '_Its alert stays open until the merge, when the action dismisses it._')" ] \
             || fail "Unexpected comment at the added annotation: $ADDED"
           [ "$(head -n1 <<< "$REMOVED")" = '<!-- scan-ballerina:suppression-change:bal-scan:removed -->' ] \
             || fail "Expected a comment at the removed y:1 annotation, got: $(cat "$WORK/payloads.jsonl")"

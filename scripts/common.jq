@@ -61,3 +61,28 @@ def justification:
 def severity($rules):
   (.ruleId as $id | ($rules | map(select(.id == $id)) | first // {}) | .defaultConfiguration.level) as $default
   | {"error": "high", "warning": "medium", "note": "low"}[.level // $default // "warning"] // "none";
+
+# On the text of an @scan:Suppress annotation: its rules segment, such as rules: ["a:1"], or "" when
+# it has none.
+def suppress_rules_segment:
+  capture("(?<s>rules\s*:\s*\[[^\]]*\])").s // "";
+
+# On the text of an @scan:Suppress annotation: the rules it lists.
+def suppress_rules:
+  suppress_rules_segment | [scan("\"([^\"]*)\"")[0]];
+
+# On the text of an @scan:Suppress annotation: its reason, or null when it gives none.
+def suppress_reason:
+  capture("reason\s*:\s*\"(?<r>(\\.|[^\"\\])*)\"").r // null;
+
+# On a unified diff patch: {plus, minus}, the text of each added line by its line in the new file
+# and of each removed line by its line in the old file, both keyed by the line number as a string.
+def diff_lines:
+  reduce (split("\n")[] | rtrimstr("\r")) as $l ({o: 0, n: 0, plus: {}, minus: {}};
+    if $l | startswith("@@") then ($l | capture("-(?<o>[0-9]+)(,[0-9]+)? \+(?<n>[0-9]+)")) as $h
+      | .o = ($h.o | tonumber) | .n = ($h.n | tonumber)
+    elif $l | startswith("+") then .plus[.n | tostring] = $l[1:] | .n += 1
+    elif $l | startswith("-") then .minus[.o | tostring] = $l[1:] | .o += 1
+    elif $l | startswith("\\") then .
+    else .o += 1 | .n += 1 end)
+  | {plus, minus};

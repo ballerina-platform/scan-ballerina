@@ -44,89 +44,69 @@ CATEGORY_NAME="$(trim "${CATEGORY:-bal-scan}")"
 TOOL="$(jq -r '.runs[0].tool.driver.name // "Ballerina Scan Tool"' "$WORK/merged.sarif" 2> /dev/null || echo "Ballerina Scan Tool")"
 ROOT="$(workspace_root)"
 
-gh_api() {
-  curl "${CURL_OPTS[@]}" --max-time 30 -H "Authorization: Bearer ${GITHUB_TOKEN:?GITHUB_TOKEN is not set}" \
-    -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "$@"
-}
-
-# Prints every item of a paginated list as one JSON array. A response that is not a list fails.
-get_all() {
-  local page=1 body
-  while :; do
-    body="$(gh_api -G "$1" -d per_page=100 -d "page=$page")" || return 1
-    jq -e 'type == "array"' <<< "$body" > /dev/null || return 1
-    printf '%s\n' "$body"
-    [ "$(jq 'length' <<< "$body")" -eq 100 ] || return 0
-    page=$((page + 1))
-  done
-}
-
 CHANGES_FILE="$WORK/suppression-changes.json"
 [ -s "$CHANGES_FILE" ] || echo '{}' > "$CHANGES_FILE"
 
 # Each suppressed finding, and each finding in a file with a suppression change, with the text of
 # its line in the checked out commit, which the diff of the pull request's head is compared with,
 # since the scan may have run on the merge commit.
-while IFS= read -r finding; do
-  [ -n "$finding" ] || continue
-  IFS=$'\t' read -r file line < <(jq -r '[.file, .line] | @tsv' <<< "$finding")
-  text="$(sed -n "${line}p" "$ROOT/$file" 2> /dev/null | tr -d '\r' || true)"
-  jq -c --arg text "$text" '. + {text: $text}' <<< "$finding"
-done < <(jq -c --slurpfile changes "$CHANGES_FILE" '
+jq --slurpfile changes "$CHANGES_FILE" '
   ([$changes[0] | (.added // [])[], (.removed // [])[] | .file] | unique) as $files
-  | .[] | select(.severity != "none" and (.suppressed or (.file as $f | any($files[]; . == $f))))' "$WORK/results.json") \
-  | jq -s . > "$WORK/pr-findings.json"
+  | map(select(.severity != "none" and (.suppressed or (.file as $f | any($files[]; . == $f)))))' \
+  "$WORK/results.json" > "$WORK/pr-candidates.json"
+# The lines of each file with such a finding, read once per file.
+while IFS= read -r file; do
+  [ -f "$ROOT/$file" ] || continue
+  jq -Rs --arg f "$file" '{($f): split("\n")}' "$ROOT/$file" || true
+done < <(jq -r 'map(.file) | unique[]' "$WORK/pr-candidates.json") | jq -s 'add // {}' > "$WORK/pr-lines.json"
+jq --slurpfile lines "$WORK/pr-lines.json" '
+  map(. + {text: (if (.line // 0) > 0 then $lines[0][.file][.line - 1] // "" | gsub("\r"; "") else "" end)})' \
+  "$WORK/pr-candidates.json" > "$WORK/pr-findings.json"
 jq 'map(select(.suppressed))' "$WORK/pr-findings.json" > "$WORK/pr-suppressed.json"
 
-if ! CURRENT="$(gh_api "$PULLS/$NUMBER" | jq -r '.head.sha // ""')" || [ -z "$CURRENT" ]; then
-  log_warning "Could not read pull request #$NUMBER, so the suppressed findings were not commented."
-  exit 0
-fi
 # Comments are placed on the head's diff, which a newer push changes. Its own run comments then.
-if [ "$CURRENT" != "$HEAD_SHA" ]; then
-  echo "Pull request #$NUMBER has moved on to $CURRENT, so the run for that commit comments the suppressed findings."
-  exit 0
-fi
+head_is_current() {
+  local current
+  if ! current="$(gh_api "$PULLS/$NUMBER" | jq -r '.head.sha // ""')" || [ -z "$current" ]; then
+    log_warning "Could not read pull request #$NUMBER, so the suppressed findings were not commented."
+    return 1
+  fi
+  if [ "$current" != "$HEAD_SHA" ]; then
+    echo "Pull request #$NUMBER has moved on to $current, so the run for that commit comments the suppressed findings."
+    return 1
+  fi
+}
+head_is_current || exit 0
 
 load_comments() {
-  get_all "$PULLS/$NUMBER/comments" | jq -s 'add // []' > "$WORK/pr-comments.json"
+  gh_pages "$PULLS/$NUMBER/comments" | jq -s 'add // []' > "$WORK/pr-comments.json"
 }
-if ! get_all "$PULLS/$NUMBER/files" | jq -s 'add // []' > "$WORK/pr-files.json" || ! load_comments; then
+if ! gh_pages "$PULLS/$NUMBER/files" | jq -s 'add // []' > "$WORK/pr-files.json" || ! load_comments; then
   log_warning "Could not read the changes and comments of pull request #$NUMBER, so the suppressed findings were not commented."
   exit 0
 fi
 
-# The suppressed findings on lines the pull request adds, whose text is the same in the head.
-jq '
-  def added: reduce (split("\n")[] | rtrimstr("\r")) as $l ({n: 0, out: {}};
-    if $l | startswith("@@") then .n = ($l | capture("\\+(?<s>[0-9]+)").s | tonumber)
-    elif $l | startswith("+") then .out[.n | tostring] = $l[1:] | .n += 1
-    elif ($l | startswith("-")) or ($l | startswith("\\")) then .
-    else .n += 1 end) | .out;
-  (map({key: .filename, value: (.patch // "" | added)}) | from_entries) as $added
+# The suppressed findings on lines the pull request adds, whose text is the same in the head. One
+# comment covers the findings of a rule on a line, since its marker names only the rule.
+jq -L "$SCRIPT_DIR" 'include "common";
+  (map({key: .filename, value: (.patch // "" | diff_lines | .plus)}) | from_entries) as $added
   | $suppressed[0] | map(select($added[.file][.line | tostring] as $t | $t != null and $t == .text))
+  | unique_by([.file, .line, .rule])
 ' --slurpfile suppressed "$WORK/pr-suppressed.json" "$WORK/pr-files.json" > "$WORK/pr-targets.json"
 
 # The annotations added or removed for findings already on the base: a suppressed finding of an
 # added one's rules, or an unsuppressed finding of a removed one's, in its file and on a line the
 # pull request does not add. Each is placed on the diff line, added or deleted, that holds its rules
 # and is nearest to where suppression-changes.sh found it, since the scanned commit may be the merge.
-jq '
-  def diff_lines: reduce (split("\n")[] | rtrimstr("\r")) as $l ({o: 0, n: 0, plus: {}, minus: {}};
-    if $l | startswith("@@") then ($l | capture("-(?<o>[0-9]+)(,[0-9]+)? \\+(?<n>[0-9]+)")) as $h
-      | .o = ($h.o | tonumber) | .n = ($h.n | tonumber)
-    elif $l | startswith("+") then .plus[.n | tostring] = $l[1:] | .n += 1
-    elif $l | startswith("-") then .minus[.o | tostring] = $l[1:] | .o += 1
-    elif $l | startswith("\\") then .
-    else .o += 1 | .n += 1 end);
+jq -L "$SCRIPT_DIR" 'include "common";
   def squash: gsub("\\s"; "");
   (map({key: .filename, value: (.patch // "" | diff_lines)}) | from_entries) as $diff
   | [(($changes[0].added // [])[] | . + {kind: "added", side: "RIGHT", ref: .line}),
      (($changes[0].removed // [])[] | . + {kind: "removed", side: "LEFT", ref: ."base-line"})]
   | reduce .[] as $c ({used: {}, out: []};
       . as $state
-      | (($c.text | capture("(?<s>rules\\s*:\\s*\\[[^\\]]*\\])").s // "") | squash) as $seg
-      | ($seg | [scan("\"([^\"]*)\"")[0]]) as $rules
+      | ($c.text | suppress_rules_segment | squash) as $seg
+      | ($c.text | suppress_rules) as $rules
       | [$findings[0][] | select(.file == $c.file and .suppressed == ($c.kind == "added")
           and (.rule as $r | any($rules[]; . == $r)) and $diff[.file].plus[.line | tostring] != .text)] as $hits
       | ($diff[$c.file][if $c.kind == "added" then "plus" else "minus" end] // {} | to_entries
@@ -157,7 +137,7 @@ read_alerts() {
 }
 
 # Writes the actions to take: create (a reply when code scanning commented the alert) or update.
-PLAN='
+PLAN='include "common";
   def marker($t): "<!-- scan-ballerina:suppression:\($category):\($t.rule) -->";
   # Untrusted text, such as a reason from a fork, made one line, without HTML or mentions.
   def safe: gsub("\r?\n"; " ") | gsub("<"; "&lt;") | gsub(">"; "&gt;") | gsub("@"; "@​");
@@ -171,7 +151,7 @@ PLAN='
   def change_rules: .findings | map(.rule) | unique | map("`\(gsub("`"; "'"'"'") | safe)`")
     | if length > 1 then "\(.[:-1] | join(", ")) and \(.[-1])" else .[0] end;
   # The annotation of a multi-line one may be only its rules line, so an added one falls back to its findings.
-  def change_reason: (.text | capture("reason\\s*:\\s*\"(?<r>(\\\\.|[^\"\\\\])*)\"").r // null)
+  def change_reason: (.text | suppress_reason)
     // (if .kind == "added" then .findings | map(.justification // "" | select(. != "")) | first else null end)
     // "";
   def change_lines: change_reason as $r
@@ -180,6 +160,9 @@ PLAN='
   def change_body:
     if .kind == "added" then
       [change_marker(.), "**New suppression added**", ""] + change_lines
+      + (if $code_scanning then ["", if (.findings | length) > 1
+          then "_Their alerts stay open until the merge, when the action dismisses them._"
+          else "_Its alert stays open until the merge, when the action dismisses it._" end] else [] end)
     else
       [change_marker(.), "**Suppression removed**", ""] + change_lines
       + (if $code_scanning then ["", if (.findings | length) > 1
@@ -218,7 +201,7 @@ PLAN='
     | {action: "update", id: .id, body: "\(.body | split("\n") | first)\nThis finding is no longer suppressed, as of \($short)."})
 '
 plan() {
-  jq -c -n --slurpfile targets "$WORK/pr-targets.json" --slurpfile comments "$WORK/pr-comments.json" \
+  jq -c -n -L "$SCRIPT_DIR" --slurpfile targets "$WORK/pr-targets.json" --slurpfile comments "$WORK/pr-comments.json" \
     --slurpfile alerts "$WORK/pr-alerts.json" --arg category "$CATEGORY_NAME" --arg bot "$BOT_LOGIN" \
     --arg tool "$TOOL" --arg short "${HEAD_SHA:0:7}" --argjson final "$1" \
     --slurpfile change_targets "$WORK/pr-change-targets.json" \
@@ -226,11 +209,13 @@ plan() {
 }
 
 # Waits until code scanning has commented the alert of each target without a comment of ours.
-if [ "${CODE_SCANNING:-false}" = true ] && [ "$(jq 'length' "$WORK/pr-targets.json")" -gt 0 ]; then
+# pull_request_target uploads to the base branch, so code scanning never comments on the pull request.
+if [ "${CODE_SCANNING:-false}" = true ] && [ "${GITHUB_EVENT_NAME:-}" != pull_request_target ] \
+  && [ "$(jq 'length' "$WORK/pr-targets.json")" -gt 0 ]; then
   DEADLINE=$((SECONDS + BOT_TIMEOUT))
   while :; do
     read_alerts
-    plan false | grep -q '"action":"wait"' || break
+    plan false | jq -se 'any(.[]; .action == "wait")' > /dev/null || break
     if [ "$SECONDS" -ge "$DEADLINE" ]; then
       echo "Code scanning did not comment every alert within ${BOT_TIMEOUT}s, so the rest get comments of their own."
       break
@@ -238,6 +223,7 @@ if [ "${CODE_SCANNING:-false}" = true ] && [ "$(jq 'length' "$WORK/pr-targets.js
     sleep "$BOT_POLL"
     load_comments || { log_warning "Could not read the comments of pull request #$NUMBER, so the suppressed findings were not commented." && exit 0; }
   done
+  head_is_current || exit 0
 fi
 
 CREATED=0 REPLIED=0 UPDATED=0 FAILED=0
@@ -246,12 +232,12 @@ while IFS= read -r item; do
   case "$(jq -r '.action + (if .reply_to then ":reply" else "" end)' <<< "$item")" in
     create:reply)
       jq -c '{body}' <<< "$item" \
-        | gh_api -X POST "$PULLS/$NUMBER/comments/$(jq -r '.reply_to' <<< "$item")/replies" --data-binary @- > /dev/null \
+        | gh_api --retry 0 -X POST "$PULLS/$NUMBER/comments/$(jq -r '.reply_to' <<< "$item")/replies" --data-binary @- > /dev/null \
         && REPLIED=$((REPLIED + 1)) || FAILED=$((FAILED + 1))
       ;;
     create)
       jq -c --arg sha "$HEAD_SHA" '{body, commit_id: $sha, path, line, side: (.side // "RIGHT")}' <<< "$item" \
-        | gh_api -X POST "$PULLS/$NUMBER/comments" --data-binary @- > /dev/null \
+        | gh_api --retry 0 -X POST "$PULLS/$NUMBER/comments" --data-binary @- > /dev/null \
         && CREATED=$((CREATED + 1)) || FAILED=$((FAILED + 1))
       ;;
     update)

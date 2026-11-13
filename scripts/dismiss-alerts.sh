@@ -25,8 +25,9 @@
 # given a changed justification), reopened, fixed and failed to change, left-open (the suppressed
 # findings whose alerts stay open because the alerts could not be listed), unsuppressed (findings
 # whose suppression was removed off the default branch), reintroduced (findings new to the default
-# branch whose alerts are dismissed), pending (true when the upload was not processed in time) and
-# error (true when the step stopped early).
+# branch whose alerts are dismissed), pending (true when the upload was not processed in time),
+# superseded (true when a newer analysis of the default branch was processed first) and error
+# (true when the step stopped early).
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -58,11 +59,6 @@ trap on_exit EXIT
 echo '{}' > "$WORK/alerts.json"
 TOOL="$(jq -r '.runs[0].tool.driver.name // "Ballerina Scan Tool"' "$WORK/merged.sarif")"
 
-gh_api() {
-  curl "${CURL_OPTS[@]}" --max-time 30 -H "Authorization: Bearer ${GITHUB_TOKEN:?GITHUB_TOKEN is not set}" \
-    -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "$@"
-}
-
 # Waits until code scanning has processed upload $1. Returns 1 when it is not processed in time,
 # and 2 when it never will be or its status cannot be read, which retrying does not change.
 wait_for_processing() {
@@ -88,18 +84,9 @@ wait_for_processing() {
   done
 }
 
-# Prints every alert of the tool on ref $1 in state $2, one JSON object per line. Stops at the
-# first page with fewer than the most items a page holds.
+# Prints every alert of the tool on ref $1 in state $2, one JSON object per line.
 list_alerts() {
-  local page=1 body count
-  while :; do
-    body="$(gh_api -G "$API" --data-urlencode "ref=$1" --data-urlencode "tool_name=$TOOL" \
-      -d "state=$2" -d per_page=100 -d "page=$page")" || return 1
-    count="$(jq 'length' <<< "$body")"
-    jq -c '.[]' <<< "$body"
-    [ "$count" -eq 100 ] || return 0
-    page=$((page + 1))
-  done
+  gh_pages "$API" --data-urlencode "ref=$1" --data-urlencode "tool_name=$TOOL" -d "state=$2" | jq -c '.[]'
 }
 
 # The commit upload-sarif records: the checkout's HEAD, which a run can set to another commit than
@@ -138,6 +125,11 @@ if [ "${DEFAULT_BRANCH:-false}" != true ]; then
   # the finding by deleting the annotation line, so the alerts are listed on the uploaded ref.
   BRANCH="$(jq -r '.repository.default_branch // ""' "${GITHUB_EVENT_PATH:-/dev/null}" 2> /dev/null || true)"
   [ -n "$BRANCH" ] || exit 0
+  # pull_request_target and workflow_run upload to the default branch, so there is nothing to compare it with.
+  if [ "$REF" = "refs/heads/$BRANCH" ]; then
+    echo "The upload went to $BRANCH itself, so removed suppressions are not checked."
+    exit 0
+  fi
   if ! list_alerts "$REF" dismissed >> "$ALERTS"; then
     echo "Could not list the code scanning alerts of $REF, so removed suppressions are not checked."
     exit 0
@@ -154,10 +146,10 @@ if [ "${DEFAULT_BRANCH:-false}" != true ]; then
     # A unit separator keeps empty fields, which a tab, as whitespace, would merge.
     IFS=$'\x1f' read -r number file line rule url own reason \
       < <(jq -r '[.number, .file, .line, .rule, .url, .own, .reason] | map(. // "" | tostring) | join("\u001f")' <<< "$item")
-    # Whether the default branch's latest analysis reports the finding. An alert has no instance
-    # on a branch that never had it.
-    if ! on_branch="$(gh_api -G "$API/$number/instances" --data-urlencode "ref=refs/heads/$BRANCH" \
-      | jq -r 'any(.[]; .state == "open")')"; then
+    # Whether the default branch's latest analysis reports the finding, as an open or a dismissed
+    # instance. An alert has no instance on a branch that never had it.
+    if ! on_branch="$(gh_pages "$API/$number/instances" --data-urlencode "ref=refs/heads/$BRANCH" \
+      | jq -s 'add // [] | any(.[]; .state != "fixed")')"; then
       echo "Could not read the instances of alert $number on $BRANCH, so it is not checked."
       continue
     fi
@@ -200,19 +192,38 @@ for state in "${STATES[@]}"; do
   fi
 done
 
-# One line per alert: number, kind and the patches as JSON, which has no raw tab or newline.
-CHANGES="$(alert_changes change "$ALERTS" | jq -r '"\(.number)\t\(.kind)\t\(.patches | tojson)"')"
+# A newer analysis of this category, processed since this run's own, moves every alert's latest
+# instance to its commit, which would read as fixed findings. The newer run updates the alerts.
+LATEST_SHA="$(gh_api -G "$REPO_API/analyses" --data-urlencode "ref=$REF" --data-urlencode "tool_name=$TOOL" -d per_page=20 \
+  | jq -r --arg c "$(trim "${CATEGORY:-bal-scan}")" \
+    'map(select((.category // "" | rtrimstr("/")) == ($c | rtrimstr("/")))) | first | .commit_sha // ""')" || LATEST_SHA=""
+if [ -n "$LATEST_SHA" ] && [ -n "$UPLOAD_SHA" ] && [ "$LATEST_SHA" != "$UPLOAD_SHA" ]; then
+  echo "Code scanning has a newer analysis of $REF, of $LATEST_SHA, so its run updates the alerts of suppressed findings."
+  jq -n '{superseded: true}' > "$WORK/alerts.json"
+  exit 0
+fi
+
+# One line per alert: number, kind, the patches and the previous dismissal as JSON, which has no
+# raw tab or newline.
+CHANGES="$(alert_changes change "$ALERTS" | jq -r '"\(.number)\t\(.kind)\t\(.patches | tojson)\t\(.previous // {} | tojson)"')"
 
 # Plain counters, since the bash 3.2 of macOS runners has no associative arrays.
 DISMISSED=0 RECORDED=0 REOPENED=0 FIXED=0 FAILED=0
-while IFS=$'\t' read -r number kind patches; do
+while IFS=$'\t' read -r number kind patches previous; do
   [ -n "$number" ] || continue
-  ok=true
+  ok=true applied=0
   while IFS= read -r patch; do
-    gh_api -X PATCH "$API/$number" -d "$patch" > /dev/null || { ok=false && break; }
+    # A patch after the first follows a reopen, so it is retried once rather than leave the alert open.
+    gh_api -X PATCH "$API/$number" -d "$patch" > /dev/null \
+      || { [ "$applied" -gt 0 ] && gh_api -X PATCH "$API/$number" -d "$patch" > /dev/null; } \
+      || { ok=false && break; }
+    applied=$((applied + 1))
   done < <(jq -c '.[]' <<< "$patches")
   if [ "$ok" != true ]; then
     FAILED=$((FAILED + 1))
+    [ "$applied" -eq 0 ] || log_warning "$(jq -r --arg n "$number" \
+      '"Alert #\($n) was reopened to record its suppression but could not be dismissed again. It was dismissed as \(.reason // "unknown"): \(.comment // "no comment"). The next run dismisses it as won'"'"'t fix, so restore this reason by hand if it matters."' \
+      <<< "$previous")"
     continue
   fi
   case "$kind" in

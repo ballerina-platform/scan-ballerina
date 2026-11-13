@@ -130,8 +130,9 @@ use_scan_toml() {
 # Prints the errors bal scan wrote to log file $1, such as "cannot scan package 'org/name': its
 # dependencies are not locked in Dependencies.toml", on one line, or nothing when there are none.
 scan_errors() {
-  { grep -E '^(bal scan: )?error: ' "$1" 2> /dev/null || true; } | tr -d '\r' \
-    | sed -E 's/^(bal scan: )?error: //' | head -n 3 | paste -sd ' ' -
+  # One awk reads the whole log, so that no reader exits early and fails the pipeline with SIGPIPE.
+  { awk '{ sub(/\r$/, "") } /^(bal scan: )?error: / { sub(/^(bal scan: )?error: /, ""); if (++n <= 3) print }' "$1" 2> /dev/null || true; } \
+    | paste -sd ' ' -
 }
 
 # Runs bal scan in a directory and keeps its output in a log file. Returns its exit code.

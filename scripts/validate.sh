@@ -91,6 +91,7 @@ check_boolean job-summary "$(trim "${JOB_SUMMARY:-true}")"
 ARTIFACTS="$(trim "${ARTIFACTS:-false}")"
 check_boolean artifacts "$ARTIFACTS"
 check_boolean suppressions "$(trim "${SUPPRESSIONS:-true}")"
+check_boolean pr-comment "$(trim "${PR_COMMENT:-true}")"
 
 # Versions below the minimums fail here. Whether the Ballerina can run the scan tool is checked
 # once, by resolve-versions.sh, which asks Ballerina Central before anything is installed.

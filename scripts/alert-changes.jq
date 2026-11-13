@@ -17,6 +17,7 @@
 #                          this suppression's: one dismissed by hand, which this step takes over, or
 #                          one whose justification changed. Code scanning rejects dismissing a
 #                          dismissed alert, so it is reopened first, and keeps its reason.
+#                          It also has previous: {reason, comment}, the dismissal it replaces.
 #                reopen    an alert this step dismissed whose results are no longer suppressed.
 #                fix       an alert this step dismissed that this analysis did not report, such as
 #                          when the code was fixed or deleted. Code scanning sets a reopened alert
@@ -53,8 +54,9 @@ def comment($r): ($marker + (if $r.justification != "" then ": \($r.justificatio
     if .state == "open" then
       {number, kind: "dismiss", patches: [{state: "dismissed", dismissed_reason: $reason, dismissed_comment: comment($r)}]}
     elif .state == "dismissed" and .dismissed_comment != comment($r) then
-      {number, kind: "record", patches: [{state: "open"},
-        {state: "dismissed", dismissed_reason: (.dismissed_reason // $reason), dismissed_comment: comment($r)}]}
+      {number, kind: "record", previous: {reason: .dismissed_reason, comment: .dismissed_comment},
+        patches: [{state: "open"},
+          {state: "dismissed", dismissed_reason: (.dismissed_reason // $reason), dismissed_comment: comment($r)}]}
     else empty end
   elif own and $r == false then
     {number, kind: "reopen", patches: [{state: "open"}]}

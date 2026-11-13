@@ -404,6 +404,8 @@ runs:
       env:
         SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
         SUPPRESSIONS: ${{ inputs.suppressions }}
+        EXCLUDE_PATHS: ${{ inputs.exclude-paths }}
+        EXCLUDE_TESTS: ${{ inputs.exclude-tests }}
         CODE_SCANNING: ${{ steps.validate.outputs.github-code-scanning }}
         CATEGORY: ${{ inputs.category }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/suppression-changes.sh"

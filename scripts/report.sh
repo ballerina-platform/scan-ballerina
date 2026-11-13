@@ -213,6 +213,8 @@ if [ "$(trim "${JOB_SUMMARY:-true}")" = "true" ] && [ -n "${GITHUB_STEP_SUMMARY:
              else "" end)
           + (if $alerts.pending then " **Code scanning had not finished processing the upload, so the alerts of suppressed findings were not updated.** The next run updates them."
              else "" end)
+          + (if $alerts.superseded then " A newer analysis of this branch was processed first, so its run updates the alerts of suppressed findings."
+             else "" end)
           + (if $alerts.error then " **Could not finish updating the code scanning alerts of suppressed findings.** See the log of the step that updates them."
              else "" end)
           + (if ($alerts.unsuppressed // 0) > 0

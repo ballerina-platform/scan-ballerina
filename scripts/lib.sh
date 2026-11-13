@@ -93,6 +93,27 @@ central_get() {
   curl "${CURL_OPTS[@]}" --max-time 30 "$@"
 }
 
+# A GitHub API call with GITHUB_TOKEN. A POST passes --retry 0, since a retry after a lost
+# response would create the item twice.
+gh_api() {
+  central_get -H "Authorization: Bearer ${GITHUB_TOKEN:?GITHUB_TOKEN is not set}" \
+    -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "$@"
+}
+
+# Prints each page of the GitHub list at URL $1, queried with the rest of the arguments, as one
+# JSON array per line. A response that is not a list fails.
+gh_pages() {
+  local url="$1" page=1 body
+  shift
+  while :; do
+    body="$(gh_api -G "$url" "$@" -d per_page=100 -d "page=$page")" || return 1
+    jq -e 'type == "array"' <<< "$body" > /dev/null || return 1
+    jq -c . <<< "$body"
+    [ "$(jq 'length' <<< "$body")" -eq 100 ] || return 0
+    page=$((page + 1))
+  done
+}
+
 # Prints the latest scan tool compatible with Ballerina $1. Central picks it from the Ballerina
 # version in the User-Agent, as it does for 'bal tool pull scan'.
 latest_compatible_tool_version() {
@@ -709,9 +730,9 @@ drop_sonarqube_platform() {
     /^[[:space:]]*\[/ {
       if ($0 ~ /^[[:space:]]*\[\[[[:space:]]*platform[[:space:]]*\]\]/) {
         if (inplat) flush()
-        inplat = 1; insub = 0; drop = 0
+        inplat = 1; insub = 0
       } else if ($0 ~ /^[[:space:]]*\[\[?[[:space:]]*platform[[:space:]]*\./) {
-        if (!inplat) { inplat = 1; drop = 0 }
+        inplat = 1
         insub = 1
       } else if (inplat) {
         flush()
