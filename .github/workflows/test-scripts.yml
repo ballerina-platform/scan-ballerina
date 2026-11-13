@@ -191,9 +191,9 @@ jobs:
           EXPECTED="$(jq -nc --arg m "$MARKER" '[
             {number: 1, kind: "dismiss", patches: [{state: "dismissed", dismissed_reason: "won'"'"'t fix", dismissed_comment: "\($m): Accepted"}]},
             {number: 5, kind: "reopen", patches: [{state: "open"}]},
-            {number: 8, kind: "record", patches: [{state: "open"}, {state: "dismissed", dismissed_reason: "false positive", dismissed_comment: "\($m)."}]},
+            {number: 8, kind: "record", previous: {reason: "false positive", comment: "Not reachable"}, patches: [{state: "open"}, {state: "dismissed", dismissed_reason: "false positive", dismissed_comment: "\($m)."}]},
             {number: 9, kind: "fix", patches: [{state: "open"}]},
-            {number: 11, kind: "record", patches: [{state: "open"}, {state: "dismissed", dismissed_reason: "won'"'"'t fix", dismissed_comment: "\($m): Accepted"}]},
+            {number: 11, kind: "record", previous: {reason: "won'"'"'t fix", comment: "\($m): Old reason"}, patches: [{state: "open"}, {state: "dismissed", dismissed_reason: "won'"'"'t fix", dismissed_comment: "\($m): Accepted"}]},
             {number: 12, kind: "fix", patches: [{state: "open"}]}
           ]')"
           # 3 is another category, 4 has a suppressed and a reported result, 6 and 10 were dismissed
