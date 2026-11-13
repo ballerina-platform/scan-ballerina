@@ -49,11 +49,11 @@ def help_markdown($desc):
 def tool_version:
   [.semanticVersion // "" | capture("^(?<major>[0-9]+)\\.(?<minor>[0-9]+)") | (.major | tonumber), (.minor | tonumber)];
 
-# bal scan up to 0.12.x reports the rule's title as every result's message, not one about the finding.
+# bal scan 0.11.x reports the rule's title as every result's message, not one about the finding.
 def generic_messages:
-  tool_version as $v | $v != [] and $v <= [0, 12];
+  tool_version as $v | $v != [] and $v < [0, 12];
 
-# bal scan before 0.12.0 sets no ruleKind, but takes each rule's level from its kind.
+# bal scan 0.11.x sets no ruleKind, but takes each rule's level from its kind.
 def kinds_from_levels:
   tool_version as $v | $v != [] and $v < [0, 12];
 
@@ -118,6 +118,9 @@ def shift_indexes($offset):
             (if $new == null then del(.rule.index) else .rule.index = $new end)
           else . end
         | if $id and $generic and $descriptions[$id] then .message.text = $descriptions[$id] else . end
-      ))
+      )
+      # SARIF needs suppressions on every result of a run or on none, so results merged from a
+      # package without suppressions get an empty array.
+      | if any(.[]; has("suppressions")) then map(.suppressions //= []) else . end)
     }]
   }

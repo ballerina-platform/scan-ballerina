@@ -1,8 +1,0 @@
-# Settings kept around the entries, with their comments and spacing.
-[rule]
-exclude = ["ballerina:10"]   # trailing comment
-limits = { max = 5, mode = "strict" }
-
-[analysis]
-# The last table, after the entries.
-enabled = true

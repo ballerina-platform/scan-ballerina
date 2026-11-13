@@ -52,14 +52,14 @@ TOOL_CHECKED=true
 TOOL_PICKED=false
 
 # 2. Ballerina. An empty ballerina-version keeps a bal on the path that can run the given scan
-# tool, or with an empty tool-version the latest ones, so it is not limited to bal scan 0.11.x.
+# tool, or with an empty tool-version the newest supported line, so it is not limited to 0.11.x.
 if [ -n "$TOOL" ]; then
   tool_needs
   KEEP="$NEEDED"
   KEEP_REASON="$TOOL_NAME needs $NEEDED"
 else
-  KEEP="$MIN_WORKSPACE_BALLERINA_VERSION"
-  KEEP_REASON="bal scan $MIN_WORKSPACE_TOOL_VERSION and later need $KEEP"
+  KEEP="$NEWEST_LINE_BALLERINA_VERSION"
+  KEEP_REASON="bal scan $NEWEST_LINE_TOOL_VERSION and later need $KEEP"
 fi
 CURRENT=""
 if has_bal; then
@@ -101,9 +101,10 @@ fi
 # 4. The pair. When Central could not say which Ballerina the scan tool needs, the oldest
 # Ballerina for its scan tool line is checked.
 if [ -n "$TOOL" ] && [[ "$BAL" =~ ^[0-9] ]] && ! version_ge "$BAL" "$NEEDED"; then
-  # Central disagrees with itself here, and BAL may be the bal on the path.
+  # Central picked a scan tool that needs a later Ballerina than BAL. No supported scan tool runs on
+  # BAL then, so only a later Ballerina helps.
   [ "$TOOL_PICKED" != true ] \
-    || die "Ballerina Central picked bal scan $TOOL as the latest version compatible with Ballerina $BAL, but records that it needs Ballerina $NEEDED or later. Set tool-version to a version that supports Ballerina $BAL."
+    || die "Ballerina Central picked bal scan $TOOL as the latest version compatible with Ballerina $BAL, but it needs Ballerina $NEEDED or later, and no scan tool the action supports runs on Ballerina $BAL. Set ballerina-version to $NEEDED or later."
   case "$WANTED_BAL" in
     '' | latest)
       die "The latest Ballerina is $BAL, but $TOOL_NAME needs Ballerina $NEEDED or later. Set tool-version to an older scan tool, or leave it empty to use the latest one compatible with Ballerina $BAL."

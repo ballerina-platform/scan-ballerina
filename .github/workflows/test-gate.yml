@@ -23,13 +23,24 @@ jobs:
           artifacts: true
           fail-on-severity: medium
 
+      # A finding at exactly the gate severity must fail it, so the comparison is >=.
       - name: Scan a package with a medium finding
         id: medium
         continue-on-error: true
         uses: ./
         with:
-          paths: test/projects/secrets
+          paths: test/projects/medium
           category: medium
+          artifacts: true
+          fail-on-severity: medium
+
+      - name: Scan a package with a high finding
+        id: high
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/secrets
+          category: high
           artifacts: true
           fail-on-severity: medium
 
@@ -43,8 +54,13 @@ jobs:
           LOW_HIGH: ${{ steps.low.outputs.high-count }}
           MEDIUM_OUTCOME: ${{ steps.medium.outcome }}
           MEDIUM_RESULT: ${{ steps.medium.outputs.result }}
+          MEDIUM_HIGH: ${{ steps.medium.outputs.high-count }}
           MEDIUM_MEDIUM: ${{ steps.medium.outputs.medium-count }}
           MEDIUM_SARIF: ${{ steps.medium.outputs.sarif-file }}
+          HIGH_OUTCOME: ${{ steps.high.outcome }}
+          HIGH_RESULT: ${{ steps.high.outputs.result }}
+          HIGH_HIGH: ${{ steps.high.outputs.high-count }}
+          HIGH_MEDIUM: ${{ steps.high.outputs.medium-count }}
         run: |
           set -euo pipefail
           fail() { echo "::error::$1"; exit 1; }
@@ -52,26 +68,31 @@ jobs:
             || fail "low-only: expected only low findings, got $LOW_HIGH high, $LOW_MEDIUM medium, $LOW_LOW low"
           [ "$LOW_OUTCOME" = success ] || fail "low-only: low findings must not fail a medium gate"
           [ "$LOW_RESULT" = passed ] || fail "low-only: result is '$LOW_RESULT', expected passed"
-          [ "$MEDIUM_MEDIUM" = 1 ] || fail "medium: medium-count is '$MEDIUM_MEDIUM', expected 1"
+          [ "$MEDIUM_MEDIUM" = 1 ] && [ "$MEDIUM_HIGH" = 0 ] \
+            || fail "medium: expected 1 medium finding, got $MEDIUM_HIGH high, $MEDIUM_MEDIUM medium"
           [ "$MEDIUM_OUTCOME" = failure ] || fail "medium: a medium finding must fail a medium gate"
           [ "$MEDIUM_RESULT" = failed ] || fail "medium: result is '$MEDIUM_RESULT', expected failed"
           [ -f "$MEDIUM_SARIF" ] || fail "medium: the SARIF file must be written even when the gate fails"
+          [ "$HIGH_HIGH" = 1 ] && [ "$HIGH_MEDIUM" = 0 ] \
+            || fail "high: expected 1 high finding, got $HIGH_HIGH high, $HIGH_MEDIUM medium"
+          [ "$HIGH_OUTCOME" = failure ] || fail "high: a high finding must fail a medium gate"
+          [ "$HIGH_RESULT" = failed ] || fail "high: result is '$HIGH_RESULT', expected failed"
 
-  max-findings:
-    name: Max findings without a severity gate
+  fail-on-count:
+    name: Fail on count without a severity gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      # The gate is off, so max-findings has no effect even though there are more findings.
+      # The gate is off, so fail-on-count has no effect even though there are more findings.
       - name: Scan
         id: scan
         uses: ./
         with:
           ballerina-version: 2201.13.5
           paths: test/projects/single
-          category: max-findings
-          max-findings: 1
+          category: fail-on-count
+          fail-on-count: 1
           artifacts: true
 
       - name: Check that the step passed
@@ -83,12 +104,12 @@ jobs:
         run: |
           set -euo pipefail
           fail() { echo "::error::$1"; exit 1; }
-          [ "$TOTAL" -gt 1 ] || fail "total-count is '$TOTAL', expected more than max-findings"
+          [ "$TOTAL" -gt 1 ] || fail "total-count is '$TOTAL', expected more than fail-on-count"
           [ "$OUTCOME" = success ] || fail "The step should pass, but its outcome is '$OUTCOME'"
           [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
 
-  severity-and-max-findings:
-    name: Fail on severity with max findings
+  severity-and-fail-on-count:
+    name: Fail on severity with fail on count
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -110,41 +131,41 @@ jobs:
         run: |
           set -euo pipefail
           [ "$TOTAL" -gt 0 ] || { echo "::error::total-count is '$TOTAL', expected findings"; exit 1; }
+          echo "above=$((TOTAL + 1))" >> "$GITHUB_OUTPUT"
           echo "at=$TOTAL" >> "$GITHUB_OUTPUT"
-          echo "below=$((TOTAL - 1))" >> "$GITHUB_OUTPUT"
 
-      - name: Scan with max-findings equal to the findings
+      - name: Scan with fail-on-count one above the findings
+        id: below-limit
+        uses: ./
+        with:
+          paths: test/projects/single
+          category: below-limit
+          artifacts: true
+          fail-on-severity: low
+          fail-on-count: ${{ steps.limits.outputs.above }}
+
+      - name: Scan with fail-on-count equal to the findings
         id: at-limit
+        continue-on-error: true
         uses: ./
         with:
           paths: test/projects/single
           category: at-limit
           artifacts: true
           fail-on-severity: low
-          max-findings: ${{ steps.limits.outputs.at }}
-
-      - name: Scan with max-findings one below the findings
-        id: over-limit
-        continue-on-error: true
-        uses: ./
-        with:
-          paths: test/projects/single
-          category: over-limit
-          artifacts: true
-          fail-on-severity: low
-          max-findings: ${{ steps.limits.outputs.below }}
+          fail-on-count: ${{ steps.limits.outputs.at }}
 
       - name: Check the gate
         shell: bash
         env:
+          BELOW_OUTCOME: ${{ steps.below-limit.outcome }}
+          BELOW_RESULT: ${{ steps.below-limit.outputs.result }}
           AT_OUTCOME: ${{ steps.at-limit.outcome }}
           AT_RESULT: ${{ steps.at-limit.outputs.result }}
-          OVER_OUTCOME: ${{ steps.over-limit.outcome }}
-          OVER_RESULT: ${{ steps.over-limit.outputs.result }}
         run: |
           set -euo pipefail
           fail() { echo "::error::$1"; exit 1; }
-          [ "$AT_OUTCOME" = success ] || fail "at-limit: findings up to max-findings must pass"
-          [ "$AT_RESULT" = passed ] || fail "at-limit: result is '$AT_RESULT', expected passed"
-          [ "$OVER_OUTCOME" = failure ] || fail "over-limit: more findings than max-findings must fail"
-          [ "$OVER_RESULT" = failed ] || fail "over-limit: result is '$OVER_RESULT', expected failed"
+          [ "$BELOW_OUTCOME" = success ] || fail "below-limit: fewer findings than fail-on-count must pass"
+          [ "$BELOW_RESULT" = passed ] || fail "below-limit: result is '$BELOW_RESULT', expected passed"
+          [ "$AT_OUTCOME" = failure ] || fail "at-limit: as many findings as fail-on-count must fail"
+          [ "$AT_RESULT" = failed ] || fail "at-limit: result is '$AT_RESULT', expected failed"

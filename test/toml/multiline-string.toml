@@ -1,5 +1,6 @@
 [[platform]]
-name = "other"
+name = "sonarqube"
+path = "./sonar-platform-plugin.jar"
 notes = """
 [not a table]
 """

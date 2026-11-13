@@ -48,12 +48,41 @@ def map_uri(f):
 def uri_path:
   if test("^(/|[A-Za-z][A-Za-z0-9+.-]*:)") then . else split("/") | map(@uri) | join("/") end;
 
-# Escapes a string for use inside a regex.
-def regex_escape:
-  gsub("(?<c>[.+*?^$(){}|\\[\\]\\\\])"; "\\\(.c)");
+# True when a SARIF result is suppressed: it has suppressions, and none is under review or rejected.
+def suppressed:
+  (.suppressions // []) as $s | ($s | length) > 0 and all($s[]; (.status // "accepted") == "accepted");
+
+# The justification of a suppressed result, "" when it gives none.
+def justification:
+  [.suppressions[]? | .justification // empty | select(. != "")] | join("; ");
 
 # The action severity of a SARIF result: high, medium, low, or none when it is not counted.
 # A result without a level takes its rule's default level, and warning when there is none.
 def severity($rules):
   (.ruleId as $id | ($rules | map(select(.id == $id)) | first // {}) | .defaultConfiguration.level) as $default
   | {"error": "high", "warning": "medium", "note": "low"}[.level // $default // "warning"] // "none";
+
+# On the text of an @scan:Suppress annotation: its rules segment, such as rules: ["a:1"], or "" when
+# it has none.
+def suppress_rules_segment:
+  capture("(?<s>rules\\s*:\\s*\\[[^\\]]*\\])").s // "";
+
+# On the text of an @scan:Suppress annotation: the rules it lists.
+def suppress_rules:
+  suppress_rules_segment | [scan("\"([^\"]*)\"")[0]];
+
+# On the text of an @scan:Suppress annotation: its reason, or null when it gives none.
+def suppress_reason:
+  capture("reason\\s*:\\s*\"(?<r>(\\\\.|[^\"\\\\])*)\"").r // null;
+
+# On a unified diff patch: {plus, minus}, the text of each added line by its line in the new file
+# and of each removed line by its line in the old file, both keyed by the line number as a string.
+def diff_lines:
+  reduce (split("\n")[] | rtrimstr("\r")) as $l ({o: 0, n: 0, plus: {}, minus: {}};
+    if $l | startswith("@@") then ($l | capture("-(?<o>[0-9]+)(,[0-9]+)? \\+(?<n>[0-9]+)")) as $h
+      | .o = ($h.o | tonumber) | .n = ($h.n | tonumber)
+    elif $l | startswith("+") then .plus[.n | tostring] = $l[1:] | .n += 1
+    elif $l | startswith("-") then .minus[.o | tostring] = $l[1:] | .o += 1
+    elif $l | startswith("\\") then .
+    else .o += 1 | .n += 1 end)
+  | {plus, minus};

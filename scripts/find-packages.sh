@@ -5,9 +5,8 @@
 # target, build and .git. A workspace is scanned as one unit from its root, so its member
 # packages are not scanned again on their own. Units matching EXCLUDE_PATHS are dropped. Each
 # package's remote Scan.toml is downloaded to the work directory, and a package whose Scan.toml
-# settings cannot be used, or whose [[platform]] entries the action cannot hide, fails the step.
-# Files that an earlier run left changed, because it stopped before restoring them, are restored
-# first.
+# settings cannot be used fails the step. Files that an earlier
+# run left changed, because it stopped before restoring them, are restored first.
 #
 # Inputs (environment): SCAN_WORK_DIR, SCAN_PATHS, EXCLUDE_PATHS, CATEGORY.
 # Writes: $SCAN_WORK_DIR/units.json, a list of {path, kind, members}, with paths relative to
@@ -39,7 +38,7 @@ UNITS='[]'
 if [ "${#FOUND[@]}" -gt 0 ]; then
   # One unit per line, collected into the list by a single jq call.
   UNITS="$(while IFS= read -r dir; do
-    if grep -Eq '^[[:space:]]*\[workspace\][[:space:]]*(#.*)?$' "$dir/Ballerina.toml"; then
+    if is_workspace_toml "$dir/Ballerina.toml"; then
       MEMBERS="$(yq -p toml -o json -I0 '.workspace.packages // []' "$dir/Ballerina.toml" 2> /dev/null || echo '[]')"
       jq -nc --arg path "$dir" --argjson members "$MEMBERS" \
         '{path: $path, kind: "workspace", members: [$members[] | tostring | sub("^\\./"; "") | sub("/+$"; "")]}'
@@ -107,26 +106,44 @@ scan_config_problem() {
 
 # Each package, including each workspace member, needs Scan.toml settings the action can use,
 # whatever platforms are selected, since a scan fails without them. Checked before the tools are
-# downloaded.
+# downloaded. bal scan itself fails a package whose dependencies are not locked in Dependencies.toml.
 PROBLEMS=()
+# The scan_config_info of each enclosing workspace, by directory, and the workspace Scan.toml of
+# each package without its own.
+WS_INFOS='{}'
+PKG_WS='{}'
 INFOS="$(while IFS= read -r pkg; do
   [ -d "$pkg" ] || continue
   scan_config_info "$pkg"
 done < <(jq -r -L "$SCRIPT_DIR" 'include "common";
   .[] | if .kind == "workspace" then .path as $ws | .members[] | join_path($ws; .) else .path end' <<< "$UNITS") \
   | jq -sc '.')"
+# The workspace of each member of a workspace unit, so only packages scanned on their own need
+# enclosing_workspace to walk up their ancestors.
+MEMBER_WS="$(jq -c -L "$SCRIPT_DIR" 'include "common";
+  [.[] | select(.kind == "workspace") | .path as $ws | .members[] | {key: join_path($ws; .), value: $ws}]
+  | from_entries' <<< "$UNITS")"
 while IFS= read -r info; do
   problem="$(scan_config_problem "$info")"
-  if [ -z "$problem" ]; then
-    # The SARIF scan hides the [[platform]] entries, which needs them in a form the action edits.
-    read_scan_config "$info"
-    if [ -n "$SCAN_TOML" ] && [ -f "$SCAN_TOML" ]; then
-      form="$(platform_form_problem "$SCAN_TOML" "${SCAN_URL:-$SCAN_TOML}")"
-      [ -z "$form" ] || problem="Package '$SCAN_PKG': $form"
-    fi
-  fi
   [ -z "$problem" ] || PROBLEMS+=("$problem")
+  read_scan_config "$info"
+  # bal scan reads the workspace Scan.toml for a member without its own. The SonarQube scan writes
+  # one for such a member, so it starts from the workspace's to keep its settings.
+  [ -n "$SCAN_TOML" ] && continue
+  ws="$(jq -r --arg p "$SCAN_PKG" '.[$p] // ""' <<< "$MEMBER_WS")"
+  if [ -n "$ws" ] || ws="$(enclosing_workspace "$SCAN_PKG")"; then
+    if ! jq -e --arg w "$ws" 'has($w)' <<< "$WS_INFOS" > /dev/null; then
+      ws_info="$(scan_config_info "$ws")"
+      problem="$(scan_config_problem "$ws_info")"
+      [ -z "$problem" ] || PROBLEMS+=("$problem")
+      WS_INFOS="$(jq -c --arg w "$ws" --argjson i "$ws_info" '. + {($w): $i}' <<< "$WS_INFOS")"
+    fi
+    PKG_WS="$(jq -c --arg p "$SCAN_PKG" --arg w "$ws" --argjson infos "$WS_INFOS" \
+      '. + (if $infos[$w]."scan-toml" != "" then {($p): $infos[$w]."scan-toml"} else {} end)' <<< "$PKG_WS")"
+  fi
 done < <(jq -c '.[]' <<< "$INFOS")
+INFOS="$(jq -c --argjson ws "$PKG_WS" \
+  'map(if $ws[.path] then . + {"workspace-scan-toml": $ws[.path]} else . end)' <<< "$INFOS")"
 if [ "${#PROBLEMS[@]}" -gt 0 ]; then
   for p in "${PROBLEMS[@]}"; do log_error "$p"; done
   exit 1

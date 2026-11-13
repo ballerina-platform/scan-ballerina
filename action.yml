@@ -7,11 +7,11 @@ branding:
 
 inputs:
   ballerina-version:
-    description: 'Ballerina version to install, 2201.12.0 or later, or latest for the latest release. Empty uses the Ballerina already on the path if it can run the scan tool (2201.13.0 or later when tool-version is also empty), and installs the latest Ballerina otherwise. A version, or latest, is installed unless it is the one on the path. Pin a version for reproducible runs.'
+    description: 'Ballerina version to install, 2201.12.0 or later, and 2201.13.0 or later for bal scan 0.13.0 and later, or latest for the latest release. Empty uses the Ballerina already on the path if it can run the scan tool (2201.13.0 or later when tool-version is also empty), and installs the latest Ballerina otherwise. A version, or latest, is installed unless it is the one on the path. Pin a version for reproducible runs.'
     required: false
     default: ''
   tool-version:
-    description: 'bal scan tool version, 0.11.0 or later, or latest for the latest release. Workspaces need 0.12.0 or later. Empty uses the latest version compatible with the Ballerina version.'
+    description: 'bal scan tool version: 0.11.1 or later of 0.11.x, for Ballerina 2201.12.x, or 0.13.0 or later, or latest for the latest release. Workspaces need 0.13.0 or later. Empty uses the latest version compatible with the Ballerina version.'
     required: false
     default: ''
   platforms:
@@ -27,7 +27,7 @@ inputs:
     required: false
     default: ''
   exclude-tests:
-    description: 'Drop findings in tests/ and modules/*/tests/.'
+    description: 'Leave the test sources (tests/ and modules/*/tests/) out of the scan with bal scan --exclude-tests, so their findings and suppressions are not reported to any platform. Overrides [analysis] excludeTests in Scan.toml.'
     required: false
     default: 'true'
   category:
@@ -46,10 +46,10 @@ inputs:
     description: 'Fail when findings are at or above low, medium or high. none turns the gate off.'
     required: false
     default: 'none'
-  max-findings:
-    description: 'Findings at or above fail-on-severity allowed before the step fails.'
+  fail-on-count:
+    description: 'Fail when this many findings, or more, are at or above fail-on-severity. A whole number of 1 or more. Applied by the action to the findings of every scanned package together.'
     required: false
-    default: '0'
+    default: '1'
   annotations:
     description: 'Show each counted finding as a file and line annotation.'
     required: false
@@ -62,6 +62,14 @@ inputs:
     description: 'Save the merged SARIF file as a workflow artifact named after the category and the job.'
     required: false
     default: 'false'
+  suppressions:
+    description: 'Apply the in-source suppressions of bal scan (@scan:Suppress). true leaves suppressed findings out of the counts, the gate and the annotations, and dismisses their code scanning alerts on the default branch. false passes --ignore-suppressions, so every finding is reported.'
+    required: false
+    default: 'true'
+  suppression-comments:
+    description: 'In pull_request and pull_request_target runs, comment the suppression''s reason of each suppressed finding on a line the pull request adds: as a reply to code scanning''s comment on its alert, waiting up to 2 minutes for it, or else as a comment of its own at that line with the finding''s message. Also comments at each @scan:Suppress annotation the pull request adds or removes for findings already on the default branch, naming their rules and the reason, edited by later runs. Needs the pull-requests: write permission. Skipped in pull_request runs for pull requests from forks and Dependabot, whose token cannot comment.'
+    required: false
+    default: 'true'
   platform-config:
     description: 'YAML mapping, keyed by platform, with the settings and credentials each selected platform needs. JSON is accepted.'
     required: false
@@ -90,6 +98,9 @@ outputs:
   total-count:
     description: 'Sum of the high, medium and low counts. INFO findings are not counted. 0 when no package was found, empty when the findings were not counted.'
     value: ${{ steps.report.outputs.total-count }}
+  suppressed-count:
+    description: 'Number of suppressed findings, left out of the other counts. INFO findings are not counted. 0 when no package was found, empty when the findings were not counted.'
+    value: ${{ steps.report.outputs.suppressed-count }}
   packages-scanned:
     description: 'Number of packages scanned, set once every package was scanned. 0 when no package was found, empty when a scan failed or did not run.'
     value: ${{ steps.report.outputs.packages-scanned }}
@@ -120,10 +131,12 @@ runs:
         INCLUDE_RULES: ${{ inputs.include-rules }}
         EXCLUDE_RULES: ${{ inputs.exclude-rules }}
         FAIL_ON_SEVERITY: ${{ inputs.fail-on-severity }}
-        MAX_FINDINGS: ${{ inputs.max-findings }}
+        FAIL_ON_COUNT: ${{ inputs.fail-on-count }}
         ANNOTATIONS: ${{ inputs.annotations }}
         JOB_SUMMARY: ${{ inputs.job-summary }}
         ARTIFACTS: ${{ inputs.artifacts }}
+        SUPPRESSIONS: ${{ inputs.suppressions }}
+        SUPPRESSION_COMMENTS: ${{ inputs.suppression-comments }}
         PLATFORM_CONFIG: ${{ inputs.platform-config }}
         BALLERINA_VERSION: ${{ inputs.ballerina-version }}
         TOOL_VERSION: ${{ inputs.tool-version }}
@@ -149,6 +162,50 @@ runs:
         PLATFORM_CONFIG: ${{ inputs.platform-config }}
         CATEGORY: ${{ inputs.category }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/check-sonarqube.sh"
+
+    # The Actions cache steps only save downloads, so a cache problem means downloading as without them.
+    - name: Restore SonarScanner from the Actions cache
+      id: restore-scanner
+      if: steps.sonarqube.outcome == 'success' && steps.sonarqube.outputs.scanner-present != 'true'
+      continue-on-error: true
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.sonarqube.outputs.scanner-zip }}
+        # Saved keys add the run to this prefix, so the prefix restores the newest one.
+        key: ${{ steps.sonarqube.outputs.scanner-key }}
+        restore-keys: ${{ steps.sonarqube.outputs.scanner-key }}-
+
+    # One cache of analyzers per SonarQube server, in up to SONAR_CACHE_SLOTS (lib.sh) slots. Saved
+    # keys end with a hash of the cached files, so each prefix restores the newest one.
+    - name: Restore the SonarScanner cache of the analyzers of server 1
+      id: restore-sonar-cache-1
+      if: steps.sonarqube.outcome == 'success' && steps.sonarqube.outputs.sonar-cache-dir-1 != '' && steps.sonarqube.outputs.sonar-cache-present-1 != 'true'
+      continue-on-error: true
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.sonarqube.outputs.sonar-cache-dir-1 }}
+        key: ${{ steps.sonarqube.outputs.sonar-cache-prefix-1 }}
+        restore-keys: ${{ steps.sonarqube.outputs.sonar-cache-prefix-1 }}
+
+    - name: Restore the SonarScanner cache of the analyzers of server 2
+      id: restore-sonar-cache-2
+      if: steps.sonarqube.outcome == 'success' && steps.sonarqube.outputs.sonar-cache-dir-2 != '' && steps.sonarqube.outputs.sonar-cache-present-2 != 'true'
+      continue-on-error: true
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.sonarqube.outputs.sonar-cache-dir-2 }}
+        key: ${{ steps.sonarqube.outputs.sonar-cache-prefix-2 }}
+        restore-keys: ${{ steps.sonarqube.outputs.sonar-cache-prefix-2 }}
+
+    - name: Restore the SonarScanner cache of the analyzers of server 3
+      id: restore-sonar-cache-3
+      if: steps.sonarqube.outcome == 'success' && steps.sonarqube.outputs.sonar-cache-dir-3 != '' && steps.sonarqube.outputs.sonar-cache-present-3 != 'true'
+      continue-on-error: true
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.sonarqube.outputs.sonar-cache-dir-3 }}
+        key: ${{ steps.sonarqube.outputs.sonar-cache-prefix-3 }}
+        restore-keys: ${{ steps.sonarqube.outputs.sonar-cache-prefix-3 }}
 
     # Resolves latest and empty versions. A Ballerina installed from a .deb package is removed when
     # another one is installed, so that setup-ballerina can install it.
@@ -194,6 +251,17 @@ runs:
         CATEGORY: ${{ inputs.category }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/install-sonarqube.sh"
 
+    # Saved before the scan, so that a failing scan does not keep it from being saved. Also saved
+    # when the restored zip failed its checksum, so that the newer entry replaces the bad one. The
+    # run-key is unique in the run, so matrix jobs saving at once do not collide on the key.
+    - name: Save SonarScanner to the Actions cache
+      if: steps.sonarqube-tools.outcome == 'success' && steps.restore-scanner.outcome == 'success' && (steps.restore-scanner.outputs.cache-matched-key == '' || steps.sonarqube-tools.outputs.scanner-zip-replaced == 'true') && steps.validate.outputs.save-cache == 'true'
+      continue-on-error: true
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.sonarqube.outputs.scanner-zip }}
+        key: ${{ steps.sonarqube.outputs.scanner-key }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.validate.outputs.run-key }}
+
     - name: Scan packages
       id: scan
       if: steps.find.outputs.count != '0'
@@ -207,8 +275,99 @@ runs:
         PLATFORM_CONFIG: ${{ inputs.platform-config }}
         INCLUDE_RULES: ${{ inputs.include-rules }}
         EXCLUDE_RULES: ${{ inputs.exclude-rules }}
+        EXCLUDE_TESTS: ${{ inputs.exclude-tests }}
+        SUPPRESSIONS: ${{ inputs.suppressions }}
         CATEGORY: ${{ inputs.category }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/scan.sh"
+
+    # Also after a failed scan: the analyzers SonarScanner downloaded are still worth keeping.
+    - name: Key the SonarScanner caches of the servers' analyzers
+      id: sonar-cache
+      if: ${{ !cancelled() && steps.sonarqube-tools.outcome == 'success' && steps.scan.outcome != 'skipped' }}
+      continue-on-error: true
+      shell: bash
+      env:
+        SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
+        SCAN_SUCCEEDED: ${{ steps.scan.outcome == 'success' }}
+        SAVE_CACHE: ${{ steps.validate.outputs.save-cache }}
+        RESTORED_KEY_1: ${{ steps.restore-sonar-cache-1.outputs.cache-matched-key }}
+        RESTORED_KEY_2: ${{ steps.restore-sonar-cache-2.outputs.cache-matched-key }}
+        RESTORED_KEY_3: ${{ steps.restore-sonar-cache-3.outputs.cache-matched-key }}
+        CATEGORY: ${{ inputs.category }}
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/sonar-cache.sh"
+
+    - name: Save the SonarScanner cache of the analyzers of server 1
+      id: save-sonar-cache-1
+      if: ${{ !cancelled() && steps.sonar-cache.outputs.save-1 == 'true' && steps.validate.outputs.save-cache == 'true' }}
+      continue-on-error: true
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.sonarqube.outputs.sonar-cache-dir-1 }}
+        key: ${{ steps.sonar-cache.outputs.key-1 }}
+
+    # actions/cache/save only warns when a save fails, so the key is looked up before it is recorded.
+    - name: Check the saved SonarScanner cache of the analyzers of server 1
+      id: check-sonar-cache-1
+      if: ${{ !cancelled() && steps.save-sonar-cache-1.outcome == 'success' }}
+      continue-on-error: true
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.sonarqube.outputs.sonar-cache-dir-1 }}
+        key: ${{ steps.sonar-cache.outputs.key-1 }}
+        lookup-only: true
+
+    - name: Save the SonarScanner cache of the analyzers of server 2
+      id: save-sonar-cache-2
+      if: ${{ !cancelled() && steps.sonar-cache.outputs.save-2 == 'true' && steps.validate.outputs.save-cache == 'true' }}
+      continue-on-error: true
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.sonarqube.outputs.sonar-cache-dir-2 }}
+        key: ${{ steps.sonar-cache.outputs.key-2 }}
+
+    # actions/cache/save only warns when a save fails, so the key is looked up before it is recorded.
+    - name: Check the saved SonarScanner cache of the analyzers of server 2
+      id: check-sonar-cache-2
+      if: ${{ !cancelled() && steps.save-sonar-cache-2.outcome == 'success' }}
+      continue-on-error: true
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.sonarqube.outputs.sonar-cache-dir-2 }}
+        key: ${{ steps.sonar-cache.outputs.key-2 }}
+        lookup-only: true
+
+    - name: Save the SonarScanner cache of the analyzers of server 3
+      id: save-sonar-cache-3
+      if: ${{ !cancelled() && steps.sonar-cache.outputs.save-3 == 'true' && steps.validate.outputs.save-cache == 'true' }}
+      continue-on-error: true
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.sonarqube.outputs.sonar-cache-dir-3 }}
+        key: ${{ steps.sonar-cache.outputs.key-3 }}
+
+    # actions/cache/save only warns when a save fails, so the key is looked up before it is recorded.
+    - name: Check the saved SonarScanner cache of the analyzers of server 3
+      id: check-sonar-cache-3
+      if: ${{ !cancelled() && steps.save-sonar-cache-3.outcome == 'success' }}
+      continue-on-error: true
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.sonarqube.outputs.sonar-cache-dir-3 }}
+        key: ${{ steps.sonar-cache.outputs.key-3 }}
+        lookup-only: true
+
+    - name: Record the saved SonarScanner cache keys
+      if: ${{ !cancelled() && (steps.check-sonar-cache-1.outputs.cache-hit == 'true' || steps.check-sonar-cache-2.outputs.cache-hit == 'true' || steps.check-sonar-cache-3.outputs.cache-hit == 'true') }}
+      continue-on-error: true
+      shell: bash
+      env:
+        SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
+        RECORD: true
+        SAVED_KEY_1: ${{ steps.check-sonar-cache-1.outputs.cache-hit == 'true' && steps.sonar-cache.outputs.key-1 || '' }}
+        SAVED_KEY_2: ${{ steps.check-sonar-cache-2.outputs.cache-hit == 'true' && steps.sonar-cache.outputs.key-2 || '' }}
+        SAVED_KEY_3: ${{ steps.check-sonar-cache-3.outputs.cache-hit == 'true' && steps.sonar-cache.outputs.key-3 || '' }}
+        CATEGORY: ${{ inputs.category }}
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/sonar-cache.sh"
 
     - name: Normalize and merge SARIF
       id: merge
@@ -216,8 +375,8 @@ runs:
       shell: bash
       env:
         SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
-        EXCLUDE_TESTS: ${{ inputs.exclude-tests }}
         EXCLUDE_PATHS: ${{ inputs.exclude-paths }}
+        SUPPRESSIONS: ${{ inputs.suppressions }}
         CATEGORY: ${{ inputs.category }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/merge-sarif.sh"
 
@@ -232,6 +391,56 @@ runs:
         sarif_file: ${{ steps.merge.outputs.sarif-file }}
         category: ${{ inputs.category }}
         token: ${{ inputs.github-token }}
+
+    # Read from the diff, so it also works for pull requests from forks and Dependabot, which cannot
+    # read the alerts. Runs before the alerts are updated, which skip the removals it warns about.
+    - name: Check for added and removed suppressions
+      id: suppression-changes
+      if: >-
+        steps.merge.outcome == 'success'
+        && (github.event_name == 'pull_request' || github.event_name == 'pull_request_target')
+      continue-on-error: true
+      shell: bash
+      env:
+        SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
+        SUPPRESSIONS: ${{ inputs.suppressions }}
+        EXCLUDE_PATHS: ${{ inputs.exclude-paths }}
+        EXCLUDE_TESTS: ${{ inputs.exclude-tests }}
+        CODE_SCANNING: ${{ steps.validate.outputs.github-code-scanning }}
+        CATEGORY: ${{ inputs.category }}
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/suppression-changes.sh"
+
+    # Dismisses the alerts of suppressed findings on the default branch, and elsewhere warns about
+    # removed suppressions. It only warns on failure, so it never fails the action.
+    - name: Update the code scanning alerts of suppressed findings
+      id: dismiss
+      if: steps.upload.outcome == 'success' && steps.validate.outputs.update-alerts == 'true'
+      continue-on-error: true
+      shell: bash
+      env:
+        SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        DEFAULT_BRANCH: ${{ steps.validate.outputs.default-branch }}
+        SARIF_ID: ${{ steps.upload.outputs.sarif-id }}
+        SUPPRESSED_COUNT: ${{ steps.merge.outputs.suppressed-count }}
+        CATEGORY: ${{ inputs.category }}
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/dismiss-alerts.sh"
+
+    # Only warns on failure, so it never fails the action.
+    - name: Comment the suppressed findings on the pull request
+      id: suppression-comments
+      if: >-
+        steps.merge.outcome == 'success' && steps.validate.outputs.restricted != 'true'
+        && (github.event_name == 'pull_request' || github.event_name == 'pull_request_target')
+        && inputs.suppression-comments == 'true'
+      continue-on-error: true
+      shell: bash
+      env:
+        SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        CODE_SCANNING: ${{ steps.upload.outcome == 'success' }}
+        CATEGORY: ${{ inputs.category }}
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/pr-comment.sh"
 
     # Runs even when the upload to code scanning failed, so that the SARIF file is still saved.
     - name: Save the SARIF file as an artifact
@@ -253,7 +462,7 @@ runs:
         ANNOTATIONS: ${{ inputs.annotations }}
         JOB_SUMMARY: ${{ inputs.job-summary }}
         FAIL_ON_SEVERITY: ${{ inputs.fail-on-severity }}
-        MAX_FINDINGS: ${{ inputs.max-findings }}
+        FAIL_ON_COUNT: ${{ inputs.fail-on-count }}
         FAILED_STEP: >-
           ${{
             (steps.yq.outcome != 'success' && 'install yq') ||
@@ -276,6 +485,7 @@ runs:
         MEDIUM: ${{ steps.merge.outputs.medium-count }}
         LOW: ${{ steps.merge.outputs.low-count }}
         TOTAL: ${{ steps.merge.outputs.total-count }}
+        SUPPRESSED: ${{ steps.merge.outputs.suppressed-count }}
         SARIF_ID: ${{ steps.upload.outputs.sarif-id }}
         ARTIFACT_NAME: ${{ steps.validate.outputs.artifact-name }}
         ARTIFACT_ID: ${{ steps.artifact.outputs.artifact-id }}

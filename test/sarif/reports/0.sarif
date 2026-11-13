@@ -20,10 +20,6 @@
         {
           "ruleId": "ballerina:1", "ruleIndex": 0, "level": "note", "message": {"text": "Rule one"},
           "locations": [{"physicalLocation": {"artifactLocation": {"uri": "main.bal", "index": 0}, "region": {"startLine": 3}}}]
-        },
-        {
-          "ruleId": "ballerina:1", "ruleIndex": 0, "level": "note", "message": {"text": "Rule one"},
-          "locations": [{"physicalLocation": {"artifactLocation": {"uri": "tests/main_test.bal", "index": 1}, "region": {"startLine": 1}}}]
         }
       ]
     }

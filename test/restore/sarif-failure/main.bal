@@ -1,4 +1,4 @@
-// Does not compile, so the SARIF scan fails while the [[platform]] entries in Scan.toml are hidden.
+// Does not compile, so the SARIF scan fails.
 public function main() {
     int count = "not a number";
 }

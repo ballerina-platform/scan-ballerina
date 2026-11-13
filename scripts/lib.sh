@@ -9,20 +9,44 @@
 
 set -euo pipefail
 
-# Known scan tool lines, oldest first: the first version of each, and the oldest Ballerina that runs
-# it. Used when Ballerina Central cannot say which Ballerina a scan tool needs.
-SCAN_TOOL_BALLERINA="\
-0.11.0 2201.12.0
-0.12.0 2201.13.0
+# Supported scan tool lines, oldest first: oldest version, first version after the line ("-" when
+# open), and oldest Ballerina that runs it. 0.12.x lacks the scan options the action uses.
+SCAN_TOOL_LINES="\
+0.11.1 0.12.0 2201.12.0
+0.13.0 - 2201.13.0
 "
+# The lines as an array, read once: version_ge's here-strings break a here-string loop in a command
+# substitution. read -a, since mapfile is missing from the bash 3.2 of macOS runners.
+IFS=$'\n' read -r -d '' -a SCAN_TOOL_ROWS <<< "$SCAN_TOOL_LINES" || true
 
-# The oldest supported scan tool, and the oldest Ballerina that runs it.
-read -r MIN_TOOL_VERSION MIN_BALLERINA_VERSION <<< "$SCAN_TOOL_BALLERINA"
+# The oldest supported scan tool and the oldest Ballerina that runs it, and the same for the newest line.
+read -r MIN_TOOL_VERSION _ MIN_BALLERINA_VERSION <<< "$SCAN_TOOL_LINES"
+read -r NEWEST_LINE_TOOL_VERSION _ NEWEST_LINE_BALLERINA_VERSION <<< "$(awk 'NF { last = $0 } END { print last }' <<< "$SCAN_TOOL_LINES")"
+SUPPORTED_TOOL_VERSIONS="bal scan $MIN_TOOL_VERSION or later of 0.11.x, for Ballerina 2201.12.x, and $NEWEST_LINE_TOOL_VERSION or later"
 
-# The first Ballerina with workspaces, and the first scan tool that scans them. Older scan tools
-# load only packages.
+# Succeeds when the action supports scan tool version $1.
+tool_supported() {
+  local first below _ row
+  for row in "${SCAN_TOOL_ROWS[@]}"; do
+    [ -n "$row" ] || continue
+    read -r first below _ <<< "$row"
+    # The upper bound ignores a pre-release suffix, so 0.12.0-rc1 belongs to the 0.12 line.
+    if version_ge "$1" "$first" && { [ "$below" = - ] || ! version_ge "${1%%-*}" "$below"; }; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# The first Ballerina the scan tool 0.13.0, the first supported one that scans workspaces, runs on.
+# 0.11.x loads only packages.
 MIN_WORKSPACE_BALLERINA_VERSION="2201.13.0"
-MIN_WORKSPACE_TOOL_VERSION="0.12.0"
+MIN_WORKSPACE_TOOL_VERSION="0.13.0"
+
+# Prints a boolean input that defaults to true as true or false.
+bool_setting() {
+  [ "$(trim "$1")" = false ] && echo false || echo true
+}
 
 # The Central API 'bal tool pull scan' uses to pick the latest scan tool for a Ballerina version.
 CENTRAL_TOOLS_URL="https://api.central.ballerina.io/2.0/registry/tools"
@@ -69,6 +93,27 @@ central_get() {
   curl "${CURL_OPTS[@]}" --max-time 30 "$@"
 }
 
+# A GitHub API call with GITHUB_TOKEN. A POST passes --retry 0, since a retry after a lost
+# response would create the item twice.
+gh_api() {
+  central_get -H "Authorization: Bearer ${GITHUB_TOKEN:?GITHUB_TOKEN is not set}" \
+    -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "$@"
+}
+
+# Prints each page of the GitHub list at URL $1, queried with the rest of the arguments, as one
+# JSON array per line. A response that is not a list fails.
+gh_pages() {
+  local url="$1" page=1 body
+  shift
+  while :; do
+    body="$(gh_api -G "$url" "$@" -d per_page=100 -d "page=$page")" || return 1
+    jq -e 'type == "array"' <<< "$body" > /dev/null || return 1
+    jq -c . <<< "$body"
+    [ "$(jq 'length' <<< "$body")" -eq 100 ] || return 0
+    page=$((page + 1))
+  done
+}
+
 # Prints the latest scan tool compatible with Ballerina $1. Central picks it from the Ballerina
 # version in the User-Agent, as it does for 'bal tool pull scan'.
 latest_compatible_tool_version() {
@@ -80,12 +125,12 @@ fetch_compatible_tool_version() {
 }
 
 # Sets PICKED_TOOL to the latest scan tool compatible with Ballerina $1, failing when Central cannot
-# say. Dies when that scan tool is older than the oldest supported one.
+# say. Dies when the action does not support that scan tool.
 pick_compatible_tool() {
   PICKED_TOOL="$(latest_compatible_tool_version "$1")" || return 1
   echo "The latest bal scan compatible with Ballerina $1 is $PICKED_TOOL."
-  version_ge "$PICKED_TOOL" "$MIN_TOOL_VERSION" \
-    || die "The latest bal scan compatible with Ballerina $1 is $PICKED_TOOL, but the oldest supported version is $MIN_TOOL_VERSION. Set tool-version to $MIN_TOOL_VERSION or a later version that supports Ballerina $1."
+  tool_supported "$PICKED_TOOL" \
+    || die "The latest bal scan compatible with Ballerina $1 is $PICKED_TOOL, which is not supported. The action supports $SUPPORTED_TOOL_VERSIONS, which needs Ballerina $NEWEST_LINE_BALLERINA_VERSION or later. Set tool-version to a supported version that runs on Ballerina $1, or set ballerina-version to $NEWEST_LINE_BALLERINA_VERSION or later."
 }
 
 # Prints the latest scan tool release, whatever Ballerina it needs. Pre-releases are left out.
@@ -97,22 +142,32 @@ fetch_latest_tool_version() {
     | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n1
 }
 
+# Prints the Ballerina scan tool $1 needs. Central records the patch it was built with, such as
+# 2201.13.2, but serves it to every patch of that update, so only the update counts. The oldest
+# Ballerina of the scan tool's line is used when that is later.
 tool_min_ballerina() {
-  cached_version "ballerina-for-scan-tool-$1" fetch_tool_min_ballerina "$1"
+  local central known
+  central="$(cached_version "ballerina-for-scan-tool-$1" fetch_tool_min_ballerina "$1")" || return 1
+  known="$(known_tool_min_ballerina "$1")"
+  if version_ge "$known" "$central"; then
+    printf '%s' "$known"
+  else
+    printf '%s' "$central"
+  fi
 }
 fetch_tool_min_ballerina() {
   central_get "$CENTRAL_SCAN_TOOL_VERSIONS_URL/$1" \
     | jq -r '.ballerinaVersion // empty | capture("^(?<update>[0-9]+\\.[0-9]+)\\.").update + ".0"'
 }
 
-# Prints the oldest Ballerina of the known scan tool line that version $1 belongs to.
+# Prints the oldest Ballerina of the supported scan tool line that version $1 belongs to.
 known_tool_min_ballerina() {
-  local row needed="$MIN_BALLERINA_VERSION" rows
-  # Read up front: version_ge's here-strings break a here-string loop in a command substitution.
-  mapfile -t rows <<< "$SCAN_TOOL_BALLERINA"
-  for row in "${rows[@]}"; do
-    if [ -n "$row" ] && version_ge "$1" "${row% *}"; then
-      needed="${row#* }"
+  local row needed="$MIN_BALLERINA_VERSION" first
+  for row in "${SCAN_TOOL_ROWS[@]}"; do
+    [ -n "$row" ] || continue
+    read -r first _ <<< "$row"
+    if version_ge "$1" "$first"; then
+      needed="${row##* }"
     fi
   done
   printf '%s' "$needed"
@@ -132,9 +187,10 @@ MIN_SONAR_PLUGIN_VERSION="0.3.0"
 SONAR_PLUGIN_URL="https://maven.pkg.github.com/ballerina-platform/sonar-ballerina/io/ballerina/sonar/sonar-platform-plugin/{version}/sonar-platform-plugin-{version}.jar"
 
 # Known plugin versions, newest first: version, oldest scan tool it works with, first scan tool it
-# is not known to work with, and the SHA-256 a download must match.
+# is not known to work with, and the SHA-256 a download must match. 0.13.0 keeps the platform API
+# of 0.12.0 that plugin 0.3.0 was built against.
 SONAR_PLUGINS="\
-0.3.0 0.11.0 0.13.0 b1e962ecc2e5337d92f7a8043089f40e1f284f2133328835d6c4987322ea98a5
+0.3.0 0.11.1 0.14.0 b1e962ecc2e5337d92f7a8043089f40e1f284f2133328835d6c4987322ea98a5
 "
 
 # Prints the SHA-256 of platform plugin version $1, failing when this release does not know it.
@@ -180,6 +236,55 @@ newest_sonar_plugin() {
 # The SonarScanner CLI an action release pins, with the SHA-256 of each distribution. Each one
 # bundles its own Java runtime.
 PINNED_SONAR_SCANNER_VERSION="8.1.0.6389"
+
+# Prints the SonarScanner distribution for the runner, such as linux-x64. action.yml names the
+# folder it caches by it, so it must match the one install-sonarqube.sh installs.
+sonar_scanner_dist() {
+  local os arch
+  case "${RUNNER_OS:-$(uname -s)}" in
+    Linux) os=linux ;;
+    macOS | Darwin) os=macosx ;;
+    Windows | MINGW* | MSYS* | CYGWIN*) os=windows ;;
+    *) return 1 ;;
+  esac
+  case "${RUNNER_ARCH:-$(uname -m)}" in
+    ARM64 | arm64 | aarch64) arch=aarch64 ;;
+    *) arch=x64 ;;
+  esac
+  # SonarSource publishes Windows for x64 only, which ARM64 Windows runs emulated.
+  [ "$os" = windows ] && arch=x64
+  printf '%s-%s' "$os" "$arch"
+}
+
+# The installed SonarScanner CLI.
+sonar_scanner_dir() {
+  printf '%s/sonar-scanner-%s-%s' "$(tool_cache_dir)" "$PINNED_SONAR_SCANNER_VERSION" "$1"
+}
+
+# The SonarScanner download, which the Actions cache holds so that its checksum is verified on restore.
+sonar_scanner_zip() {
+  printf '%s/sonar-scanner-cli-%s-%s.zip' "$(tool_cache_dir)" "$PINNED_SONAR_SCANNER_VERSION" "$1"
+}
+
+# SONAR_USER_HOME of SonarScanner, one per SonarQube server ($1, a hash of its URL), so that the
+# Actions cache of one server's analyzers is never mixed with another's.
+sonar_user_home() {
+  printf '%s/sonar-user-home/%s' "$(tool_cache_dir)" "$1"
+}
+
+# The number of SonarQube servers whose SONAR_USER_HOME action.yml keeps in the Actions cache: it
+# has restore, save and check steps for each of these slots.
+SONAR_CACHE_SLOTS=3
+
+# Sets the access time of each file in SonarScanner cache folder $1, and in the plugins it unzipped,
+# to 1970, then creates marker file $2, so that sonar-cache.sh can tell the files the scan read by an
+# access time newer than it.
+mark_sonar_cache() {
+  [ -d "$1" ] || return 0
+  find "$1" -mindepth 2 -maxdepth 2 -type f ! -path "$1/_*" -exec touch -a -t 197001020000 {} + 2> /dev/null || return 0
+  [ ! -d "$1/_unzip" ] || find "$1/_unzip" -type f -exec touch -a -t 197001020000 {} + 2> /dev/null || true
+  touch "$2"
+}
 sonar_scanner_sha256() {
   case "$1" in
     linux-x64) echo bb8f709f9cb73352f8d1260a3b3c506c0f41146754bc630762c126d795499d0b ;;
@@ -235,6 +340,23 @@ escape_property() {
 log_error() { echo "::error title=bal scan ($(escape_property "${CATEGORY:-bal-scan}"))::$(escape_data "$1")"; }
 log_warning() { echo "::warning title=bal scan ($(escape_property "${CATEGORY:-bal-scan}"))::$(escape_data "$1")"; }
 log_notice() { echo "::notice title=bal scan ($(escape_property "${CATEGORY:-bal-scan}"))::$(escape_data "$1")"; }
+
+# Prints annotation $4 of level $1 (warning or notice) at line $3 of file $2. GitHub shows at most 10
+# annotations of each level per step, so later ones are left out.
+FILE_WARNINGS=0
+FILE_NOTICES=0
+log_file_annotation() {
+  local shown
+  if [ "$1" = notice ]; then
+    FILE_NOTICES=$((FILE_NOTICES + 1)) && shown="$FILE_NOTICES"
+  else
+    FILE_WARNINGS=$((FILE_WARNINGS + 1)) && shown="$FILE_WARNINGS"
+  fi
+  [ "$shown" -le 10 ] || return 0
+  echo "::$1 file=$(escape_property "$2"),line=$3,title=$(escape_property "bal scan ($(trim "${CATEGORY:-bal-scan}"))")::$(escape_data "$4")"
+}
+log_file_warning() { log_file_annotation warning "$@"; }
+log_file_notice() { log_file_annotation notice "$@"; }
 
 die() {
   log_error "$1"
@@ -419,6 +541,16 @@ scan_table() {
   printf '%s' "${json:-null}"
 }
 
+# Prints the directory bal scan resolves the relative paths of a Scan.toml against: the folder of
+# a local file ($2), and the package ($1) for a remote one ($3 set) or none.
+scan_toml_base_dir() {
+  if [ -n "$2" ] && [ -z "${3:-}" ]; then
+    dirname "$2"
+  else
+    printf '%s' "$1"
+  fi
+}
+
 # Resolves a [scan] configPath of package $1: absolute, or relative to the package.
 resolve_config_path() {
   if is_absolute_path "$2"; then
@@ -474,6 +606,26 @@ scan_config_info() {
   jq -nc --arg path "$pkg" --argjson table "$([ "$table" != null ] && echo true || echo false)" \
     --arg config "$config" --arg url "$url" --arg file "$file" \
     '{path: $path, table: $table, config: $config, url: $url, "scan-toml": $file}'
+}
+
+# Succeeds when Ballerina.toml $1 has a [workspace] table, with LF or CRLF line endings.
+is_workspace_toml() {
+  [ -f "$1" ] && grep -Eq '^[[:space:]]*\[workspace\][[:space:]]*(#.*)?'$'\r''?$' "$1"
+}
+
+# Prints the directory of the workspace whose Ballerina.toml lists package $1, both relative to the
+# repository root, or fails when there is none.
+enclosing_workspace() {
+  local dir="$1"
+  while [ "$dir" != "." ] && [ "$dir" != "/" ]; do
+    dir="$(dirname "$dir")"
+    is_workspace_toml "$dir/Ballerina.toml" \
+      && yq -p toml -o json -I0 '.workspace.packages // []' "$dir/Ballerina.toml" 2> /dev/null \
+        | jq -e -L "$(dirname "${BASH_SOURCE[0]}")" --arg ws "$dir" --arg p "$1" 'include "common";
+            any(.[]; join_path($ws; tostring | sub("^\\./"; "") | sub("/+$"; "")) == $p)' > /dev/null \
+      && { printf '%s' "$dir"; return 0; }
+  done
+  return 1
 }
 
 # Sets SCAN_PKG, SCAN_CONFIG, SCAN_URL and SCAN_TOML from the scan_config_info JSON in $1.
@@ -570,17 +722,17 @@ tool_cache_dir() {
   printf '%s' "$dir"
 }
 
-# Prints a Scan.toml without its [[platform]] entries ("all", or only "sonarqube") and their sub-tables,
-# keeping the rest byte for byte. Other forms are missed, so callers check with scan_toml_platforms.
-drop_platforms() {
-  awk -v mode="$1" '
+# Prints a Scan.toml without its sonarqube [[platform]] entry and the entry's sub-tables, keeping
+# the rest byte for byte. Other forms are missed, so callers check with scan_toml_platforms.
+drop_sonarqube_platform() {
+  awk '
     function flush() { if (!drop) printf "%s", buf; buf = ""; drop = 0; inplat = 0 }
     /^[[:space:]]*\[/ {
       if ($0 ~ /^[[:space:]]*\[\[[[:space:]]*platform[[:space:]]*\]\]/) {
         if (inplat) flush()
-        inplat = 1; insub = 0; drop = (mode == "all")
+        inplat = 1; insub = 0
       } else if ($0 ~ /^[[:space:]]*\[\[?[[:space:]]*platform[[:space:]]*\./) {
-        if (!inplat) { inplat = 1; drop = (mode == "all") }
+        inplat = 1
         insub = 1
       } else if (inplat) {
         flush()
@@ -588,7 +740,7 @@ drop_platforms() {
     }
     inplat {
       buf = buf $0 "\n"
-      if (!insub && mode == "sonarqube" && $0 ~ /^[[:space:]]*name[[:space:]]*=[[:space:]]*["\047]sonarqube["\047]/) drop = 1
+      if (!insub && $0 ~ /^[[:space:]]*name[[:space:]]*=[[:space:]]*["\047]sonarqube["\047]/) drop = 1
       next
     }
     { print }
@@ -596,18 +748,22 @@ drop_platforms() {
   '
 }
 
-# Prints why the [[platform]] entries of a Scan.toml file ($1) cannot be hidden, or nothing when
-# they can or the file is not valid TOML, which bal scan reports itself. $2 is the name to use in
-# the message, such as the URL of a remote file.
-platform_form_problem() {
-  local file="$1" name="$2" left
-  scan_toml_platforms "$file" > /dev/null || return 0
-  if ! left="$(drop_platforms all < "$file" | yq -p toml -o json -I0 '.platform // [] | length' 2> /dev/null)"; then
-    echo "'$name' cannot have its [[platform]] entries hidden without breaking the file, for example because a multi-line string holds a line that starts with '['. Move such values out of the file."
-  elif [ "$(tr -d '\r' <<< "$left")" != 0 ]; then
-    echo "'$name' has [[platform]] entries in a form the action cannot hide, such as an array of inline tables. Write each entry as a [[platform]] table."
-  fi
-  return 0
+# Succeeds when Scan.toml $1, with its sonarqube [[platform]] entry dropped and the entry the
+# SonarQube scan appends added, is valid TOML with exactly one sonarqube entry, as use_plugin in
+# scan.sh writes it. It cannot be for a platform array of inline tables, whatever its entries, or a
+# multi-line string in the entry that holds a line starting with "[".
+sonarqube_entry_replaceable() {
+  local left
+  ! inline_platform_array "$1" || return 1
+  left="$( { drop_sonarqube_platform < "$1"; printf '\n[[platform]]\nname = "sonarqube"\npath = "plugin.jar"\n'; } \
+    | yq -p toml -o json -I0 '[.platform // [] | .[] | select(.name == "sonarqube")] | length' 2> /dev/null | tr -d '\r')" || return 1
+  [ "$left" = 1 ]
+}
+
+# Succeeds when Scan.toml $1 sets platform as a top-level key, such as an array of inline tables,
+# which a [[platform]] table cannot be appended to.
+inline_platform_array() {
+  awk '/^[[:space:]]*\[/ { exit } /^[[:space:]]*("platform"|\047platform\047|platform)[[:space:]]*=/ { found = 1; exit } END { exit !found }' "$1"
 }
 
 # Kept in the git directory so a later run can restore files a stopped run left changed, while git

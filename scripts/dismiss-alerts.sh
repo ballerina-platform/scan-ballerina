@@ -1,0 +1,242 @@
+#!/usr/bin/env bash
+# Step 9: after the upload to code scanning, keeps the code scanning alerts in line with the
+# suppressions, since code scanning ignores SARIF suppressions. Alerts are matched to findings by
+# rule, file, line and column. Every failure is a warning, so that it never fails the scan.
+#   - On the default branch (DEFAULT_BRANCH=true), dismisses the alert of each suppressed finding as
+#     "won't fix" with the suppression's justification, so the accepted finding can still be
+#     audited. It takes over an alert dismissed by hand once its finding is suppressed, keeping its
+#     reason, and records a changed justification. It reopens an alert it dismissed once its finding
+#     is reported again without a suppression, and once its finding is gone, so that code scanning
+#     sets it to fixed instead of leaving it dismissed.
+#   - On other branches, warns about each unsuppressed finding that code scanning matches to a
+#     dismissed alert, and so shows nothing new for: one this step dismissed whose suppression was
+#     removed, and one dismissed by anyone whose finding the default branch no longer has, such as
+#     code reintroduced after it was fixed. It skips a finding whose suppression the pull request
+#     removes in the diff, which suppression-changes.sh has already warned about at the annotation.
+# Both read the alerts of the uploaded ref, GITHUB_REF, whose locations are those of the findings
+# just uploaded. It first waits until code scanning has processed the upload, so that they are current.
+#
+# Inputs (environment): SCAN_WORK_DIR, GITHUB_TOKEN, GITHUB_REPOSITORY, GITHUB_REF, GITHUB_API_URL,
+# GITHUB_SHA, GITHUB_WORKSPACE, GITHUB_EVENT_PATH, DEFAULT_BRANCH, SARIF_ID, SUPPRESSED_COUNT (the
+# suppressed-count output of merge-sarif.sh), CATEGORY.
+# Reads: $SCAN_WORK_DIR/results.json and $SCAN_WORK_DIR/merged.sarif, written by merge-sarif.sh, and
+# $SCAN_WORK_DIR/suppression-changes.json, written by suppression-changes.sh when it ran.
+# Writes: $SCAN_WORK_DIR/alerts.json, with the number of alerts dismissed, recorded (taken over or
+# given a changed justification), reopened, fixed and failed to change, left-open (the suppressed
+# findings whose alerts stay open because the alerts could not be listed), unsuppressed (findings
+# whose suppression was removed off the default branch), reintroduced (findings new to the default
+# branch whose alerts are dismissed), pending (true when the upload was not processed in time),
+# superseded (true when a newer analysis of the default branch was processed first) and error
+# (true when the step stopped early).
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib.sh
+source "$SCRIPT_DIR/lib.sh"
+
+WORK="${SCAN_WORK_DIR:?SCAN_WORK_DIR is not set}"
+REPO_API="${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is not set}/code-scanning"
+API="$REPO_API/alerts"
+# Marks the alerts this step dismissed, so that it reopens no alert dismissed by hand.
+MARKER="Suppressed in source with @scan:Suppress"
+REASON="won't fix"
+# The longest dismissed_comment code scanning accepts.
+COMMENT_LIMIT=280
+# How long to wait for code scanning to process the upload, on top of the wait of upload-sarif.
+PROCESSING_TIMEOUT=180
+
+# Any unexpected failure, such as a response that is not JSON, ends the step with a warning.
+# shellcheck disable=SC2329
+on_exit() {
+  local status=$?
+  if [ "$status" -ne 0 ]; then
+    log_warning "Could not finish updating the code scanning alerts of suppressed findings. See the log of this step."
+    jq -n '{error: true}' > "$WORK/alerts.json"
+  fi
+  exit 0
+}
+trap on_exit EXIT
+
+echo '{}' > "$WORK/alerts.json"
+TOOL="$(jq -r '.runs[0].tool.driver.name // "Ballerina Scan Tool"' "$WORK/merged.sarif")"
+
+# Waits until code scanning has processed upload $1. Returns 1 when it is not processed in time,
+# and 2 when it never will be or its status cannot be read, which retrying does not change.
+wait_for_processing() {
+  local deadline=$((SECONDS + PROCESSING_TIMEOUT)) response code status
+  [ -n "$1" ] || return 0
+  while :; do
+    # -w prints the HTTP status after the body, also when curl fails on an HTTP error.
+    response="$(gh_api -w '\n%{http_code}' "$REPO_API/sarifs/$1")" || true
+    code="${response##*$'\n'}"
+    case "$code" in
+      401 | 403 | 404)
+        log_warning "Could not read the processing status of the upload $1 (HTTP $code), so no alert was changed. The token needs the security-events: read permission."
+        return 2
+        ;;
+    esac
+    status="$(jq -r '.processing_status // ""' <<< "${response%$'\n'*}" 2> /dev/null)" || status=""
+    case "$status" in
+      complete) return 0 ;;
+      failed) log_warning "Code scanning could not process the upload $1, so no alert was changed." && return 2 ;;
+    esac
+    [ "$SECONDS" -lt "$deadline" ] || return 1
+    sleep 5
+  done
+}
+
+# Prints every alert of the tool on ref $1 in state $2, one JSON object per line.
+list_alerts() {
+  gh_pages "$API" --data-urlencode "ref=$1" --data-urlencode "tool_name=$TOOL" -d "state=$2" | jq -c '.[]'
+}
+
+# The commit upload-sarif records: the checkout's HEAD, which a run can set to another commit than
+# GITHUB_SHA.
+UPLOAD_SHA="$(git -C "$(workspace_root)" rev-parse HEAD 2> /dev/null || true)"
+UPLOAD_SHA="${UPLOAD_SHA:-${GITHUB_SHA:-}}"
+
+# Only on the default branch does the commit of the upload tell the alerts this analysis reported.
+alert_changes() {
+  local sha=""
+  [ "$1" != change ] || sha="$UPLOAD_SHA"
+  jq -sc -f "$SCRIPT_DIR/alert-changes.jq" --slurpfile results "$WORK/results.json" \
+    --arg category "$(trim "${CATEGORY:-bal-scan}")" --arg marker "$MARKER" --arg reason "$REASON" \
+    --argjson limit "$COMMENT_LIMIT" --arg sha "$sha" --arg mode "$1" "$2"
+}
+
+PROCESSING=0
+wait_for_processing "${SARIF_ID:-}" || PROCESSING=$?
+if [ "$PROCESSING" -eq 2 ]; then
+  jq -n '{error: true}' > "$WORK/alerts.json"
+  exit 0
+elif [ "$PROCESSING" -ne 0 ]; then
+  log_warning "Code scanning had not finished processing the upload after ${PROCESSING_TIMEOUT}s, so the alerts of suppressed findings were not updated. The next run updates them."
+  jq -n '{pending: true}' > "$WORK/alerts.json"
+  exit 0
+fi
+
+ALERTS="$WORK/alerts-list.jsonl"
+: > "$ALERTS"
+
+REF="${GITHUB_REF:?GITHUB_REF is not set}"
+
+if [ "${DEFAULT_BRANCH:-false}" != true ]; then
+  # Off the default branch: the dismissed alerts of the uploaded ref whose findings are reported
+  # without a suppression. The default branch's locations predate the change, which usually moves
+  # the finding by deleting the annotation line, so the alerts are listed on the uploaded ref.
+  BRANCH="$(jq -r '.repository.default_branch // ""' "${GITHUB_EVENT_PATH:-/dev/null}" 2> /dev/null || true)"
+  [ -n "$BRANCH" ] || exit 0
+  # pull_request_target and workflow_run upload to the default branch, so there is nothing to compare it with.
+  if [ "$REF" = "refs/heads/$BRANCH" ]; then
+    echo "The upload went to $BRANCH itself, so removed suppressions are not checked."
+    exit 0
+  fi
+  if ! list_alerts "$REF" dismissed >> "$ALERTS"; then
+    echo "Could not list the code scanning alerts of $REF, so removed suppressions are not checked."
+    exit 0
+  fi
+  UNSUPPRESSED=0
+  REINTRODUCED=0
+  # Whether the pull request removes an annotation in file $1 that lists rule $2.
+  removed_in_diff() {
+    jq -e --arg file "$1" --arg rule "\"$2\"" '(.removed // []) | any(.file == $file and (.text | contains($rule)))' \
+      "$WORK/suppression-changes.json" > /dev/null 2>&1
+  }
+  while IFS= read -r item; do
+    [ -n "$item" ] || continue
+    # A unit separator keeps empty fields, which a tab, as whitespace, would merge.
+    IFS=$'\x1f' read -r number file line rule url own reason \
+      < <(jq -r '[.number, .file, .line, .rule, .url, .own, .reason] | map(. // "" | tostring) | join("\u001f")' <<< "$item")
+    # Whether the default branch's latest analysis reports the finding, as an open or a dismissed
+    # instance. An alert has no instance on a branch that never had it.
+    if ! on_branch="$(gh_pages "$API/$number/instances" --data-urlencode "ref=refs/heads/$BRANCH" \
+      | jq -s 'add // [] | any(.[]; .state != "fixed")')"; then
+      echo "Could not read the instances of alert $number on $BRANCH, so it is not checked."
+      continue
+    fi
+    if [ "$on_branch" = true ]; then
+      # Dismissed by hand while the default branch reports it: a decision about this finding.
+      [ "$own" = true ] || continue
+      UNSUPPRESSED=$((UNSUPPRESSED + 1))
+      ! removed_in_diff "$file" "$rule" || continue
+      message="This $rule finding is no longer suppressed, but its alert #$number stays dismissed on $BRANCH until this change is merged, when the action reopens it: $url"
+    else
+      REINTRODUCED=$((REINTRODUCED + 1))
+      if [ "$own" = true ]; then
+        message="This $rule finding is not on $BRANCH, but code scanning matches it to alert #$number, dismissed there while it was suppressed, so it is not shown as new. The action reopens the alert when this change is merged: $url"
+      else
+        message="This $rule finding is not on $BRANCH, but code scanning matches it to alert #$number, dismissed by hand as $reason, so it is not shown as new, and the alert stays dismissed after the merge. Reopen it if the dismissal no longer applies: $url"
+      fi
+    fi
+    log_file_warning "$file" "$line" "$message"
+  done < <(alert_changes unsuppressed "$ALERTS")
+  echo "Findings whose suppression was removed: $UNSUPPRESSED. Findings new to $BRANCH whose alerts are dismissed: $REINTRODUCED."
+  jq -n --argjson u "$UNSUPPRESSED" --argjson r "$REINTRODUCED" --arg branch "$BRANCH" \
+    '{unsuppressed: $u, reintroduced: $r, branch: $branch}' > "$WORK/alerts.json"
+  exit 0
+fi
+
+# merge-sarif.sh's count, which the job summary shows too: without findings of severity none.
+SUPPRESSED="${SUPPRESSED_COUNT:-0}"
+STATES=(dismissed)
+# Open alerts are only dismissed, so they are listed only when a finding is suppressed.
+jq -e 'any(.[]; .suppressed)' "$WORK/results.json" > /dev/null && STATES=(open dismissed)
+for state in "${STATES[@]}"; do
+  if ! list_alerts "$REF" "$state" >> "$ALERTS"; then
+    if [ "$SUPPRESSED" -gt 0 ]; then
+      log_warning "Could not list the code scanning alerts, so the alerts of $SUPPRESSED suppressed finding(s) stay open and no alert was reopened. See the log of this step."
+    else
+      echo "Could not list the code scanning alerts, so no alert of a finding whose suppression was removed was reopened."
+    fi
+    jq -n --argjson n "$SUPPRESSED" '{dismissed: 0, recorded: 0, reopened: 0, fixed: 0, failed: 0, "left-open": $n}' > "$WORK/alerts.json"
+    exit 0
+  fi
+done
+
+# A newer analysis of this category, processed since this run's own, moves every alert's latest
+# instance to its commit, which would read as fixed findings. The newer run updates the alerts.
+LATEST_SHA="$(gh_api -G "$REPO_API/analyses" --data-urlencode "ref=$REF" --data-urlencode "tool_name=$TOOL" -d per_page=20 \
+  | jq -r --arg c "$(trim "${CATEGORY:-bal-scan}")" \
+    'map(select((.category // "" | rtrimstr("/")) == ($c | rtrimstr("/")))) | first | .commit_sha // ""')" || LATEST_SHA=""
+if [ -n "$LATEST_SHA" ] && [ -n "$UPLOAD_SHA" ] && [ "$LATEST_SHA" != "$UPLOAD_SHA" ]; then
+  echo "Code scanning has a newer analysis of $REF, of $LATEST_SHA, so its run updates the alerts of suppressed findings."
+  jq -n '{superseded: true}' > "$WORK/alerts.json"
+  exit 0
+fi
+
+# One line per alert: number, kind, the patches and the previous dismissal as JSON, which has no
+# raw tab or newline.
+CHANGES="$(alert_changes change "$ALERTS" | jq -r '"\(.number)\t\(.kind)\t\(.patches | tojson)\t\(.previous // {} | tojson)"')"
+
+# Plain counters, since the bash 3.2 of macOS runners has no associative arrays.
+DISMISSED=0 RECORDED=0 REOPENED=0 FIXED=0 FAILED=0
+while IFS=$'\t' read -r number kind patches previous; do
+  [ -n "$number" ] || continue
+  ok=true applied=0
+  while IFS= read -r patch; do
+    # A patch after the first follows a reopen, so it is retried once rather than leave the alert open.
+    gh_api -X PATCH "$API/$number" -d "$patch" > /dev/null \
+      || { [ "$applied" -gt 0 ] && gh_api -X PATCH "$API/$number" -d "$patch" > /dev/null; } \
+      || { ok=false && break; }
+    applied=$((applied + 1))
+  done < <(jq -c '.[]' <<< "$patches")
+  if [ "$ok" != true ]; then
+    FAILED=$((FAILED + 1))
+    [ "$applied" -eq 0 ] || log_warning "$(jq -r --arg n "$number" \
+      '"Alert #\($n) was reopened to record its suppression but could not be dismissed again. It was dismissed as \(.reason // "unknown"): \(.comment // "no comment"). The next run dismisses it as won'"'"'t fix, so restore this reason by hand if it matters."' \
+      <<< "$previous")"
+    continue
+  fi
+  case "$kind" in
+    dismiss) DISMISSED=$((DISMISSED + 1)) ;;
+    record) RECORDED=$((RECORDED + 1)) ;;
+    reopen) REOPENED=$((REOPENED + 1)) ;;
+    fix) FIXED=$((FIXED + 1)) ;;
+  esac
+done <<< "$CHANGES"
+
+[ "$FAILED" -eq 0 ] \
+  || log_warning "Could not change $FAILED code scanning alert(s) of suppressed findings. The token needs the security-events: write permission."
+echo "Code scanning alerts of suppressed findings: dismissed $DISMISSED, recorded $RECORDED, reopened $REOPENED, set to fixed $FIXED."
+jq -n --argjson d "$DISMISSED" --argjson c "$RECORDED" --argjson r "$REOPENED" \
+  --argjson x "$FIXED" --argjson f "$FAILED" \
+  '{dismissed: $d, recorded: $c, reopened: $r, fixed: $x, failed: $f, "left-open": 0}' > "$WORK/alerts.json"

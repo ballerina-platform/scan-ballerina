@@ -4,8 +4,8 @@
 #
 # Each setting is resolved field by field: the package's item under platform-config packages,
 # then the platform level of platform-config, then the package's Scan.toml and properties file.
-# Paths in platform-config are relative to the repository root, and paths in Scan.toml are
-# relative to the package.
+# Paths in platform-config are relative to the repository root. Paths in Scan.toml are relative to
+# the folder of Scan.toml, or to the package for a remote one, as bal scan resolves them.
 #
 # Inputs (environment): SCAN_WORK_DIR, PLATFORM_CONFIG, CATEGORY.
 # Writes: $SCAN_WORK_DIR/sonarqube.json, a list of {package, scan-toml, scan-toml-kind, plugin,
@@ -13,6 +13,18 @@
 # is then the downloaded copy), or none when the package has no Scan.toml. plugin is {kind, value},
 # where kind is version, file, url, or default (resolved by install-sonarqube.sh). Tokens are not
 # written; scan.sh reads them from PLATFORM_CONFIG.
+# Also writes $SCAN_WORK_DIR/sonar-caches.json, a list of {slot, url, home, prefix}: each server's
+# SONAR_USER_HOME and the prefix of its cache keys, and sonar-user-home into each item of
+# sonarqube.json.
+# Outputs: the Actions cache of SonarScanner, which action.yml restores and saves:
+#   scanner-zip, scanner-key, scanner-present  The SonarScanner CLI zip, the prefix of its cache
+#                                              keys, and true when an earlier use of the action in
+#                                              the job has it.
+#   sonar-cache-dir-N, sonar-cache-prefix-N, sonar-cache-present-N  For the server in slot N, from
+#                                              1 to SONAR_CACHE_SLOTS: its cache folder of
+#                                              analyzers, the prefix of its cache keys, and true when
+#                                              an earlier use of the action in the job has it. Not
+#                                              set for an unused slot.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -86,12 +98,14 @@ while IFS= read -r unit; do
 
   # The package's Scan.toml and its sonarqube [[platform]] entry. For a remote Scan.toml, that is
   # the copy find-packages.sh downloaded, and messages name its URL.
-  read_scan_config "$(unit_scan_config "$unit" "$pkg")"
+  info="$(unit_scan_config "$unit" "$pkg")"
+  read_scan_config "$info"
   scan_toml="$SCAN_TOML"
   scan_url="$SCAN_URL"
   scan_toml_name="${scan_url:-$scan_toml}"
   scan_toml_kind="none"
   entry='{}'
+  base="$(scan_toml_base_dir "$pkg" "$scan_toml" "$scan_url")"
   if [ -n "$scan_toml" ]; then
     scan_toml_kind="file"
     [ -z "$scan_url" ] || scan_toml_kind="remote"
@@ -101,10 +115,15 @@ while IFS= read -r unit; do
     fi
     entry="$(jq -c 'map(select(.name == "sonarqube")) | first // {}' <<< "$platforms")"
     # The SonarQube scan replaces this entry with one for the resolved plugin.
-    left="$(drop_platforms sonarqube < "$scan_toml" \
-      | yq -p toml -o json -I0 '[.platform // [] | .[] | select(.name == "sonarqube")] | length' 2> /dev/null | tr -d '\r')" || left=""
-    if [ "$left" != 0 ]; then
-      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml_name' is in a form the action cannot replace. Write it as a [[platform]] table with name = \"sonarqube\" on its own line."
+    if ! sonarqube_entry_replaceable "$scan_toml"; then
+      error "Package '$pkg': the [[platform]] entries in '$scan_toml_name' are in a form the action cannot change. Write each entry as a [[platform]] table, not an array of inline tables, with name = \"...\" on its own line and without a multi-line string that holds a line starting with '['."
+      continue
+    fi
+  else
+    # The SonarQube scan of a workspace member without a Scan.toml starts from the workspace's.
+    ws_toml="$(jq -r '."workspace-scan-toml" // ""' <<< "$info")"
+    if [ -n "$ws_toml" ] && ! sonarqube_entry_replaceable "$ws_toml"; then
+      error "Package '$pkg': the SonarQube scan of this member adds a [[platform]] entry to a copy of the workspace Scan.toml '$ws_toml', which is in a form the action cannot extend. Remove its platform entries, which bal scan ignores in a workspace Scan.toml, and any multi-line string that holds a line starting with '['."
       continue
     fi
   fi
@@ -125,13 +144,13 @@ while IFS= read -r unit; do
     elif [[ "$entry_path" =~ ^https:// ]]; then
       plugin="$(jq -nc --arg v "$entry_path" '{kind: "url", value: $v}')"
     elif [[ "$entry_path" =~ ^[a-zA-Z][a-zA-Z0-9+.-]*:// ]]; then
-      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml_name' has the path '$entry_path'. Use an https URL or a path relative to the package."
+      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml_name' has the path '$entry_path'. Use an https URL or a relative path."
     elif is_absolute_path "$entry_path"; then
-      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml_name' has the absolute path '$entry_path', which points to one machine. Use a path relative to the package, an https URL, or set plugin-version under platform-config.sonarqube."
-    elif [ ! -f "$pkg/$(to_unix_path "$entry_path")" ]; then
-      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml_name' has the path '$entry_path', which is not an existing file relative to the package."
+      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml_name' has the absolute path '$entry_path', which points to one machine. Use a relative path, an https URL, or set plugin-version under platform-config.sonarqube."
+    elif [ ! -f "$base/$(to_unix_path "$entry_path")" ]; then
+      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml_name' has the path '$entry_path', which is not an existing file relative to '$base'."
     else
-      plugin="$(jq -nc --arg v "$pkg/$(to_unix_path "$entry_path")" '{kind: "file", value: $v}')"
+      plugin="$(jq -nc --arg v "$base/$(to_unix_path "$entry_path")" '{kind: "file", value: $v}')"
     fi
   fi
 
@@ -146,10 +165,16 @@ while IFS= read -r unit; do
       continue
     fi
   elif [ -n "$entry_properties" ]; then
-    properties_file="$pkg/$(to_unix_path "$entry_properties")"
-    is_absolute_path "$entry_properties" && properties_file="$(to_unix_path "$entry_properties")"
+    # bal scan resolves it against the folder of Scan.toml when the file is there, and otherwise
+    # passes it unchanged to the platform plugin, which runs in the package.
+    if is_absolute_path "$entry_properties"; then
+      properties_file="$(to_unix_path "$entry_properties")"
+    else
+      properties_file="$base/$(to_unix_path "$entry_properties")"
+      [ -f "$properties_file" ] || properties_file="$pkg/$(to_unix_path "$entry_properties")"
+    fi
     if [ ! -f "$properties_file" ]; then
-      error "Package '$pkg': sonarProjectPropertiesPath in '$scan_toml_name' is '$entry_properties', which does not exist."
+      error "Package '$pkg': sonarProjectPropertiesPath in '$scan_toml_name' is '$entry_properties', which is not an existing file relative to '$base' or to the package."
       continue
     fi
   elif [ -f "$pkg/sonar-project.properties" ]; then
@@ -208,5 +233,51 @@ if [ "${#ERRORS[@]}" -gt 0 ]; then
   exit 1
 fi
 
+# The Actions cache, restored before the tools are installed. Each server gets its own
+# SONAR_USER_HOME and cache, since SonarScanner downloads the analyzers the server has installed,
+# so jobs that share a server share its cache whatever other servers they use.
+DIST="$(sonar_scanner_dist)" || die "SonarQube reporting does not support the runner's operating system, ${RUNNER_OS:-$(uname -s)}."
+SCANNER_DIR="$(sonar_scanner_dir "$DIST")"
+SCANNER_ZIP="$(sonar_scanner_zip "$DIST")"
+present() { [ -d "$1" ] && [ -n "$(ls -A "$1" 2> /dev/null)" ] && echo true || echo false; }
+USER_SONAR_HOME="$(to_unix_path "${SONAR_USER_HOME:-$HOME/.sonar}")"
+
+CACHES='[]'
+while IFS= read -r url; do
+  server="$(printf '%s' "$url" | sha256_of /dev/stdin | cut -c1-16)"
+  home="$(sonar_user_home "$server")"
+  # SonarScanner reads the truststore and keystore of a private CA from SONAR_USER_HOME/ssl, so the
+  # user's own ssl folder is carried over to the action's SONAR_USER_HOME. It is outside the cache.
+  if [ -d "$USER_SONAR_HOME/ssl" ] && [ "$USER_SONAR_HOME" != "$home" ]; then
+    mkdir -p "$home"
+    rm -rf "$home/ssl"
+    cp -R "$USER_SONAR_HOME/ssl" "$home/ssl"
+  fi
+  CACHES="$(jq -c --arg url "$url" --arg home "$home" --arg prefix "scan-ballerina-sonar-cache-$DIST-$server-" \
+    '. + [{slot: (length + 1), url: $url, home: $home, prefix: $prefix}]' <<< "$CACHES")"
+done < <(jq -r '[.[]."host-url" | rtrimstr("/")] | unique | .[]' <<< "$RESOLVED")
+[ ! -d "$USER_SONAR_HOME/ssl" ] || echo "SonarScanner uses the ssl folder of $USER_SONAR_HOME."
+printf '%s\n' "$CACHES" > "$WORK/sonar-caches.json"
+
+RESOLVED="$(jq -c --argjson caches "$CACHES" \
+  'map(."host-url" as $u | . + {"sonar-user-home": ($caches[] | select(.url == ($u | rtrimstr("/"))) | .home)})' <<< "$RESOLVED")"
 printf '%s\n' "$RESOLVED" > "$WORK/sonarqube.json"
 jq -r '.[] | "SonarQube project for \(.package): \(."project-key") on \(."host-url")"' <<< "$RESOLVED"
+
+set_output scanner-zip "$(to_native_path "$SCANNER_ZIP")"
+# A prefix: saved keys add the run, so a zip saved again after failing its checksum is restored next.
+set_output scanner-key "scan-ballerina-sonar-scanner-zip-$PINNED_SONAR_SCANNER_VERSION-$DIST-$(sonar_scanner_sha256 "$DIST" | cut -c1-16)"
+set_output scanner-present "$({ [ -f "$SCANNER_ZIP" ] || [ "$(present "$SCANNER_DIR")" = true ]; } && echo true || echo false)"
+# action.yml has a fixed set of cache steps, one per slot. A server past the last slot is scanned
+# with its own SONAR_USER_HOME, which is not kept in the Actions cache.
+COUNT="$(jq 'length' <<< "$CACHES")"
+[ "$COUNT" -le "$SONAR_CACHE_SLOTS" ] \
+  || echo "The run uses $COUNT SonarQube servers; the analyzers of the first $SONAR_CACHE_SLOTS are kept in the Actions cache."
+for ((slot = 1; slot <= SONAR_CACHE_SLOTS; slot++)); do
+  home="$(jq -r --argjson s "$slot" '.[] | select(.slot == $s) | .home' <<< "$CACHES")"
+  if [ -n "$home" ]; then
+    set_output "sonar-cache-dir-$slot" "$(to_native_path "$home/cache")"
+    set_output "sonar-cache-prefix-$slot" "$(jq -r --argjson s "$slot" '.[] | select(.slot == $s) | .prefix' <<< "$CACHES")"
+    set_output "sonar-cache-present-$slot" "$(present "$home/cache")"
+  fi
+done

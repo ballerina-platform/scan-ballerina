@@ -29,7 +29,7 @@ CHECKED="${TOOL_CHECKED:-true}"
 if [ -z "$WANTED" ]; then
   if pick_compatible_tool "$BAL_VERSION"; then
     WANTED="$PICKED_TOOL"
-  elif [ -n "$ACTIVE" ] && version_ge "$ACTIVE" "$MIN_TOOL_VERSION"; then
+  elif [ -n "$ACTIVE" ] && tool_supported "$ACTIVE"; then
     log_warning "Could not ask Ballerina Central for the latest bal scan compatible with Ballerina $BAL_VERSION, so the active version $ACTIVE is used. Set tool-version to choose the version."
     WANTED="$ACTIVE"
   else

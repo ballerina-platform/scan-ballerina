@@ -3,10 +3,12 @@
 # so it runs before packages are searched or anything but yq is downloaded.
 #
 # Inputs (environment): PLATFORMS, SCAN_PATHS, EXCLUDE_PATHS, EXCLUDE_TESTS, CATEGORY,
-# INCLUDE_RULES, EXCLUDE_RULES, FAIL_ON_SEVERITY, MAX_FINDINGS, ANNOTATIONS, JOB_SUMMARY,
-# ARTIFACTS, PLATFORM_CONFIG, BALLERINA_VERSION, TOOL_VERSION, MATRIX (the matrix as JSON).
-# Outputs: work-dir, github-code-scanning, restricted, sonarqube, sonarqube-skipped, artifacts
-# (true or false), artifact-name.
+# INCLUDE_RULES, EXCLUDE_RULES, FAIL_ON_SEVERITY, FAIL_ON_COUNT, ANNOTATIONS, JOB_SUMMARY,
+# ARTIFACTS, SUPPRESSIONS, SUPPRESSION_COMMENTS, PLATFORM_CONFIG, BALLERINA_VERSION, TOOL_VERSION,
+# MATRIX (the matrix as JSON).
+# Outputs: work-dir, github-code-scanning, restricted, default-branch, update-alerts (true when
+# dismiss-alerts.sh runs after the upload), save-cache, sonarqube, sonarqube-skipped, artifacts
+# (true or false), artifact-name, run-key.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -43,7 +45,7 @@ while IFS= read -r p; do
   if one_of "$p" "${KNOWN_PLATFORMS[@]}"; then
     one_of "$p" "${SELECTED[@]+"${SELECTED[@]}"}" || SELECTED+=("$p")
   else
-    error "platforms has an unknown platform '$p'. Accepted values: ${KNOWN_PLATFORMS[*]}."
+    error "platforms has '$p', which is not a supported platform. Supported platforms: ${KNOWN_PLATFORMS[*]}."
   fi
 done < <(split_list "${PLATFORMS:-}")
 selected() { one_of "$1" "${SELECTED[@]+"${SELECTED[@]}"}"; }
@@ -81,22 +83,24 @@ done < <(printf '%s\n%s\n' "$INCLUDE" "$EXCLUDE" | sed '/^$/d')
 FAIL_ON="$(tr '[:upper:]' '[:lower:]' <<< "$(trim "${FAIL_ON_SEVERITY:-none}")")"
 one_of "$FAIL_ON" none low medium high \
   || error "fail-on-severity must be one of none, low, medium or high, got '${FAIL_ON_SEVERITY:-}'."
-[[ "$(trim "${MAX_FINDINGS:-0}")" =~ ^[0-9]+$ ]] \
-  || error "max-findings must be a whole number of 0 or more, got '${MAX_FINDINGS:-}'."
+[[ "$(trim "${FAIL_ON_COUNT:-1}")" =~ ^[1-9][0-9]*$ ]] \
+  || error "fail-on-count must be a whole number of 1 or more, got '${FAIL_ON_COUNT:-}'."
 check_boolean exclude-tests "$(trim "${EXCLUDE_TESTS:-true}")"
 check_boolean annotations "$(trim "${ANNOTATIONS:-false}")"
 check_boolean job-summary "$(trim "${JOB_SUMMARY:-true}")"
 ARTIFACTS="$(trim "${ARTIFACTS:-false}")"
 check_boolean artifacts "$ARTIFACTS"
+check_boolean suppressions "$(trim "${SUPPRESSIONS:-true}")"
+check_boolean suppression-comments "$(trim "${SUPPRESSION_COMMENTS:-true}")"
 
 # Versions below the minimums fail here. Whether the Ballerina can run the scan tool is checked
 # once, by resolve-versions.sh, which asks Ballerina Central before anything is installed.
 TOOL_VERSION="$(trim "${TOOL_VERSION:-}")"
 if [ -n "$TOOL_VERSION" ] && [ "$TOOL_VERSION" != latest ]; then
   if [[ ! "$TOOL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
-    error "tool-version must be empty, latest or a version such as $MIN_TOOL_VERSION, got '$TOOL_VERSION'."
-  elif ! version_ge "$TOOL_VERSION" "$MIN_TOOL_VERSION"; then
-    error "tool-version is $TOOL_VERSION, but the oldest supported version is $MIN_TOOL_VERSION. Set $MIN_TOOL_VERSION or later, or leave it empty to use the latest version compatible with the Ballerina version."
+    error "tool-version must be empty, latest or a version such as $NEWEST_LINE_TOOL_VERSION, got '$TOOL_VERSION'."
+  elif ! tool_supported "$TOOL_VERSION"; then
+    error "tool-version is $TOOL_VERSION, which is not supported. The action supports $SUPPORTED_TOOL_VERSIONS. Set one of these, or leave it empty to use the latest version compatible with the Ballerina version."
   fi
 fi
 BALLERINA_VERSION="$(trim "${BALLERINA_VERSION:-}")"
@@ -114,7 +118,7 @@ fi
 
 while IFS= read -r p; do
   if ! one_of "$p" "${KNOWN_PLATFORMS[@]}"; then
-    error "platform-config has an unknown platform '$p'. Accepted platforms: ${KNOWN_PLATFORMS[*]}."
+    error "platform-config has settings for '$p', which is not a supported platform. Supported platforms: ${KNOWN_PLATFORMS[*]}."
   elif ! selected "$p"; then
     log_warning "platform-config has settings for '$p', which is not in platforms. They are ignored."
   fi
@@ -173,7 +177,8 @@ sonarqube_schema_errors() {
   ' <<< "$CONFIG"
 }
 
-if jq -e 'has("github-code-scanning") and (.["github-code-scanning"] // {} | length > 0)' <<< "$CONFIG" > /dev/null; then
+if selected github-code-scanning \
+  && jq -e '.["github-code-scanning"] // {} | length > 0' <<< "$CONFIG" > /dev/null; then
   error "platform-config.github-code-scanning takes no settings. It uses the github-token and category inputs."
 fi
 
@@ -197,8 +202,45 @@ esac
 GCS=false
 selected github-code-scanning && GCS=true
 
+# With suppressions off every finding looks unsuppressed, so updating the alerts would reopen
+# every alert dismissed for a suppression.
+UPDATE_ALERTS=false
+[ "$GCS" = true ] && [ "$RESTRICTED" = false ] && [ "$(bool_setting "${SUPPRESSIONS:-}")" = true ] && UPDATE_ALERTS=true
+
+# Dismissing alerts changes them for the whole repository. pull_request_target and workflow_run also
+# have the default branch as GITHUB_REF but may scan pull request code, so they never count.
+DEFAULT_BRANCH=false
+case "${GITHUB_EVENT_NAME:-}" in
+  # Scheduled runs always run on the default branch, and their payload has no repository object.
+  schedule) DEFAULT_BRANCH=true ;;
+  push | workflow_dispatch)
+    if [ -f "${GITHUB_EVENT_PATH:-}" ] && [ -n "${GITHUB_REF:-}" ] && jq -e --arg ref "$GITHUB_REF" \
+      '.repository.default_branch // "" | . != "" and "refs/heads/\(.)" == $ref' "$GITHUB_EVENT_PATH" > /dev/null 2>&1; then
+      DEFAULT_BRANCH=true
+    fi
+    ;;
+esac
+
+# Later trusted runs load the cached analyzers with SONAR_TOKEN set, so a cache is saved only from
+# events whose code is trusted or whose cache only that pull request can restore. Events such as
+# pull_request_target, workflow_run and issue_comment save into the default branch's cache but may
+# run pull request code.
+SAVE_CACHE=false
+case "${GITHUB_EVENT_NAME:-}" in
+  push | schedule | workflow_dispatch | merge_group | pull_request | pull_request_review | pull_request_review_comment)
+    SAVE_CACHE=true
+    ;;
+esac
+
 SONARQUBE=false
-if selected sonarqube; then
+if selected sonarqube && jq -e '.sonarqube == null' <<< "$CONFIG" > /dev/null; then
+  # A platform-config passed whole from a secret is empty in a restricted run.
+  if [ "$RESTRICTED" = true ]; then
+    log_warning "Skipping sonarqube: pull requests from forks get no secrets and Dependabot runs get only Dependabot secrets, so platform-config has no settings for it. The SARIF file is still produced."
+  else
+    error "sonarqube is in platforms, but platform-config has no settings for it. Add a 'sonarqube:' mapping with at least a token."
+  fi
+elif selected sonarqube; then
   while IFS= read -r e; do [ -n "$e" ] && error "$e"; done < <(sonarqube_schema_errors)
   # Each plugin-version, at the platform level and under packages. latest and malformed versions
   # are left to the checks above.
@@ -253,9 +295,14 @@ mkdir -p "$WORK/reports" "$WORK/logs"
 set_output work-dir "$WORK"
 set_output github-code-scanning "$GCS"
 set_output restricted "$RESTRICTED"
+set_output default-branch "$DEFAULT_BRANCH"
+set_output update-alerts "$UPDATE_ALERTS"
+set_output save-cache "$SAVE_CACHE"
 set_output sonarqube "$SONARQUBE"
 set_output sonarqube-skipped "$(selected sonarqube && [ "$SONARQUBE" = false ] && echo true || echo false)"
 set_output artifacts "$ARTIFACTS"
 set_output artifact-name "$ARTIFACT_NAME"
+# Unique in the run like the artifact name, but safe in a cache key, which takes no comma.
+set_output run-key "$(printf '%s' "$ARTIFACT_NAME" | sha256_of /dev/stdin | cut -c1-12)"
 echo "Platforms: ${SELECTED[*]:-none (SARIF file only)}"
 [ "$ARTIFACTS" = false ] || echo "Artifact: '$ARTIFACT_NAME', with the merged SARIF file"

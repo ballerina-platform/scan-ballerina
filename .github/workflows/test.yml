@@ -16,7 +16,8 @@ permissions:
 #   test/projects/multi/payments            2 low
 #   test/projects/services/api              1 low
 #   test/projects/services/internal/legacy  2 low
-#   test/projects/secrets                   1 medium
+#   test/projects/secrets                   1 high
+#   test/projects/medium                    1 medium
 #   test/projects/workspace/billing         1 low (workspace member)
 #   test/projects/workspace/shipping        1 low (workspace member)
 # The packages in test/sonarqube each set up one SonarQube case, with a Scan.toml or a
@@ -93,9 +94,10 @@ jobs:
           # The error each step must report, by step ID, which is also its category.
           EXPECTED: |
             {
-              "old-tool-version": "tool-version is 0.10.0, but the oldest supported version is 0.11.0",
-              "old-ballerina-version": "ballerina-version is 2201.11.0, but bal scan 0.11.0 and later need Ballerina 2201.12.0 or later",
-              "mismatched-versions": "ballerina-version is 2201.12.0, but bal scan 0.12.0 needs Ballerina 2201.13.0 or later",
+              "old-tool-version": "tool-version is 0.10.0, which is not supported",
+              "old-ballerina-version": "ballerina-version is 2201.11.0, but bal scan 0.11.1 and later need Ballerina 2201.12.0 or later",
+              "mismatched-versions": "ballerina-version is 2201.12.0, but bal scan 0.13.0 needs Ballerina 2201.13.0 or later",
+              "unsupported-tool-version": "tool-version is 0.12.0, which is not supported",
               "latest-tool-version": "ballerina-version is 2201.12.0, but the latest bal scan"
             }
         run: |
@@ -121,8 +123,8 @@ jobs:
           ANNOTATIONS="$(bash .github/scripts/annotations.sh 'Setup / Ballerina and scan tool versions set to latest')"
           jq . <<< "$ANNOTATIONS"
           jq -e 'any(.[]; .annotation_level == "warning"
-              and (.message | contains("Ballerina 2201.13.0 is on the path and can run the scan tool, but ballerina-version is latest")))' \
-            <<< "$ANNOTATIONS" > /dev/null || fail "latest must warn that it replaces Ballerina 2201.13.0 on the path"
+              and (.message | contains("Ballerina 2201.13.2 is on the path and can run the scan tool, but ballerina-version is latest")))' \
+            <<< "$ANNOTATIONS" > /dev/null || fail "latest must warn that it replaces Ballerina 2201.13.2 on the path"
 
       - name: Check the error of a workspace on Ballerina 2201.12.0
         shell: bash
