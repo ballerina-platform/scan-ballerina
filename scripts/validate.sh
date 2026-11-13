@@ -4,8 +4,8 @@
 #
 # Inputs (environment): PLATFORMS, SCAN_PATHS, EXCLUDE_PATHS, EXCLUDE_TESTS, CATEGORY,
 # INCLUDE_RULES, EXCLUDE_RULES, FAIL_ON_SEVERITY, FAIL_ON_COUNT, ANNOTATIONS, JOB_SUMMARY,
-# ARTIFACTS, SUPPRESSIONS, PR_COMMENT, PLATFORM_CONFIG, BALLERINA_VERSION, TOOL_VERSION, MATRIX
-# (the matrix as JSON).
+# ARTIFACTS, SUPPRESSIONS, SUPPRESSION_COMMENTS, PLATFORM_CONFIG, BALLERINA_VERSION, TOOL_VERSION,
+# MATRIX (the matrix as JSON).
 # Outputs: work-dir, github-code-scanning, restricted, default-branch, update-alerts (true when
 # dismiss-alerts.sh runs after the upload), save-cache, sonarqube, sonarqube-skipped, artifacts
 # (true or false), artifact-name, run-key.
@@ -91,7 +91,7 @@ check_boolean job-summary "$(trim "${JOB_SUMMARY:-true}")"
 ARTIFACTS="$(trim "${ARTIFACTS:-false}")"
 check_boolean artifacts "$ARTIFACTS"
 check_boolean suppressions "$(trim "${SUPPRESSIONS:-true}")"
-check_boolean pr-comment "$(trim "${PR_COMMENT:-true}")"
+check_boolean suppression-comments "$(trim "${SUPPRESSION_COMMENTS:-true}")"
 
 # Versions below the minimums fail here. Whether the Ballerina can run the scan tool is checked
 # once, by resolve-versions.sh, which asks Ballerina Central before anything is installed.

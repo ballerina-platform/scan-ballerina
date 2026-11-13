@@ -66,8 +66,8 @@ inputs:
     description: 'Apply the in-source suppressions of bal scan (@scan:Suppress). true leaves suppressed findings out of the counts, the gate and the annotations, and dismisses their code scanning alerts on the default branch. false passes --ignore-suppressions, so every finding is reported.'
     required: false
     default: 'true'
-  pr-comment:
-    description: 'In pull_request and pull_request_target runs, comment the suppression''s reason of each suppressed finding on a line the pull request adds: as a reply to code scanning''s comment on its alert, waiting up to 2 minutes for it, or else as a comment of its own at that line with the finding''s message. Also comments at each @scan:Suppress annotation the pull request adds or removes for findings already on the default branch, naming their rules and the reason, edited by later runs. Needs the pull-requests: write permission. Skipped in runs for pull requests from forks and Dependabot, whose token cannot comment.'
+  suppression-comments:
+    description: 'In pull_request and pull_request_target runs, comment the suppression''s reason of each suppressed finding on a line the pull request adds: as a reply to code scanning''s comment on its alert, waiting up to 2 minutes for it, or else as a comment of its own at that line with the finding''s message. Also comments at each @scan:Suppress annotation the pull request adds or removes for findings already on the default branch, naming their rules and the reason, edited by later runs. Needs the pull-requests: write permission. Skipped in pull_request runs for pull requests from forks and Dependabot, whose token cannot comment.'
     required: false
     default: 'true'
   platform-config:
@@ -136,7 +136,7 @@ runs:
         JOB_SUMMARY: ${{ inputs.job-summary }}
         ARTIFACTS: ${{ inputs.artifacts }}
         SUPPRESSIONS: ${{ inputs.suppressions }}
-        PR_COMMENT: ${{ inputs.pr-comment }}
+        SUPPRESSION_COMMENTS: ${{ inputs.suppression-comments }}
         PLATFORM_CONFIG: ${{ inputs.platform-config }}
         BALLERINA_VERSION: ${{ inputs.ballerina-version }}
         TOOL_VERSION: ${{ inputs.tool-version }}
@@ -428,11 +428,11 @@ runs:
 
     # Only warns on failure, so it never fails the action.
     - name: Comment the suppressed findings on the pull request
-      id: pr-comment
+      id: suppression-comments
       if: >-
         steps.merge.outcome == 'success' && steps.validate.outputs.restricted != 'true'
         && (github.event_name == 'pull_request' || github.event_name == 'pull_request_target')
-        && inputs.pr-comment == 'true'
+        && inputs.suppression-comments == 'true'
       continue-on-error: true
       shell: bash
       env:

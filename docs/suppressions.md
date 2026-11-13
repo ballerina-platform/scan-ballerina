@@ -43,13 +43,13 @@ A finding a pull request newly suppresses that is already on the default branch 
 
 In `pull_request` and `pull_request_target` runs, the action reads the `@scan:Suppress` annotations the pull request adds and removes from the diff with its base commit, also in runs for forks and Dependabot. It shows one warning at each added annotation, naming its rules and its reason, since its findings are left out of the counts and the gate as soon as it is pushed, whether or not a reviewer accepts it, and one at each removed one, since its findings are counted again and their alerts stay dismissed until the merge. The job summary gives their number.
 
-Unless `pr-comment` is `false`, an annotation added or removed for findings already on the default branch, which code scanning shows nothing for, also gets a review comment at its line, on the deleted line for a removed one, naming its rules and its reason:
+Unless `suppression-comments` is `false`, an annotation added or removed for findings already on the default branch, which code scanning shows nothing for, also gets a review comment at its line, on the deleted line for a removed one, naming its rules and its reason:
 
 ![A comment at an annotation the pull request removes](images/suppression-removed-from-base.png)
 
 ### Suppressed findings on added lines
 
-Unless `pr-comment` is `false`, the action comments the reason of each suppressed finding on a line the pull request adds. Code scanning comments each new alert at its line, so the action waits up to 2 minutes for that comment and posts the suppression's reason as a reply in its thread, right under the finding's message:
+Unless `suppression-comments` is `false`, the action comments the reason of each suppressed finding on a line the pull request adds. Code scanning comments each new alert at its line, so the action waits up to 2 minutes for that comment and posts the suppression's reason as a reply in its thread, right under the finding's message:
 
 ![The suppression's reason as a reply to code scanning's comment on a pull request](images/suppression-on-conversation.png)
 
@@ -59,7 +59,7 @@ A finding that code scanning does not comment in time, or at all, such as one ma
 
 A comment already there is edited rather than repeated. One whose finding is no longer suppressed, or whose change the pull request no longer makes, says so.
 
-The comments need the `pull-requests: write` permission, and a failure only warns. Runs for pull requests from forks and Dependabot have a read-only token, so they cannot comment. Set `pr-comment: false` to turn the comments off.
+The comments need the `pull-requests: write` permission, and a failure only warns. Runs for pull requests from forks and Dependabot have a read-only token, so they cannot comment. Set `suppression-comments: false` to turn the comments off.
 
 ## Turning suppressions off
 

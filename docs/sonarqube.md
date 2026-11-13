@@ -27,13 +27,15 @@ Instead, list the member package directories in `paths`, rather than the workspa
 
 Runs for pull requests from forks, such as `pull_request` and `pull_request_review` runs, get no secrets. Runs triggered by Dependabot on any event other than `pull_request_target` and `workflow_run` get only Dependabot secrets, not Actions secrets, so store the SonarQube token as a Dependabot secret too to analyze them.
 
+`pull_request_target` runs, including those for forks and Dependabot, get the base repository's secrets and a `GITHUB_TOKEN` that can write. Do not check out, scan or run the pull request's code in such a run: building it, or loading a platform plugin or `Scan.toml` it changes, can run that code with the SonarQube token and the write token. Scan pull requests from `pull_request` runs instead.
+
 Fork runs get a read-only `GITHUB_TOKEN`. Dependabot runs get a read-only `GITHUB_TOKEN` by default, and a workflow can grant `security-events: write` through the `permissions` key. In such a run, the action skips SonarQube with a warning when a token is empty, and still produces the SARIF file.
 
 The action still tries the upload to code scanning, which accepts uploads with a read-only token from `pull_request` runs, and from other runs whose token can write security events. When the upload fails in such a run on an event other than `pull_request`, the action reports it as skipped with a warning instead of failing. In a `pull_request` run, a failed upload fails the step, since it is not caused by the read-only token. Save the SARIF file with `artifacts: true` and upload it from a trusted `workflow_run` workflow.
 
 ## Excluded files
 
-With `exclude-tests: true`, `bal scan` leaves the test sources out, so SonarQube receives no findings in them either. `exclude-paths` is applied to the SARIF file only, so SonarQube receives each package's findings before it. Use `sonar.exclusions` to keep the same files out of SonarQube.
+With `exclude-tests: true`, `bal scan` leaves the test sources out, so SonarQube receives no findings in them either. A package that `exclude-paths` excludes is not scanned at all, so it reaches neither the SARIF file nor SonarQube. Files that `exclude-paths` excludes within a scanned package are dropped from the SARIF file only, so SonarQube still receives their findings. Use `sonar.exclusions` to keep those files out of SonarQube too.
 
 ## Cache
 
