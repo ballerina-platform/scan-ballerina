@@ -679,8 +679,9 @@ jobs:
               || fail "tool-version $v must be accepted: $(cat "$WORK/$v.log")"
           done
 
-      # A fake bal fails the first $FAILS pulls, as Ballerina Central does when it rate limits. A
-      # version Central has said is published is pulled again, and any other version only once.
+      # A fake bal fails the first $FAILS pulls, as Ballerina Central does when it rate limits, and
+      # with ACTIVATES=false pulls a version that 'bal tool use' never makes active. A version is
+      # pulled again unless Central answered 404 for it, or it was pulled but cannot be made active.
       - name: Retry a failed scan tool pull
         shell: bash
         run: |
@@ -690,32 +691,75 @@ jobs:
           mkdir -p "$WORK/bin"
           cat > "$WORK/bin/bal" << 'EOF'
           #!/usr/bin/env bash
+          repo="$HOME/.ballerina/repositories/central.ballerina.io/bala/ballerina/tool_scan"
           case "$1 $2" in
             "version "*) echo "Ballerina 2201.13.2 (Swan Lake Update 13)" ;;
-            "tool list") [ ! -s "$STATE/active" ] || echo "|scan |$(cat "$STATE/active") * |" ;;
-            "tool use") [ ! -e "$STATE/pulled" ] || echo "${3#scan:}" > "$STATE/active" ;;
+            "tool list") [ ! -s "$STATE/active" ] || echo "|scan |$(cat "$STATE/active") |" ;;
+            "tool use") [ "$ACTIVATES" = false ] || [ ! -d "$repo/${3#scan:}" ] || echo "${3#scan:}" > "$STATE/active" ;;
             "tool pull")
               echo x >> "$STATE/pulls"
               [ "$(wc -l < "$STATE/pulls")" -gt "$FAILS" ] || exit 1
-              : > "$STATE/pulled"
-              echo "${3#scan:}" > "$STATE/active" ;;
+              mkdir -p "$repo/${3#scan:}"
+              [ "$ACTIVATES" = false ] || echo "${3#scan:}" > "$STATE/active" ;;
           esac
           EOF
           chmod +x "$WORK/bin/bal"
-          # Usage: install NAME FAILS TOOL_PICKED
+          # Usage: install NAME FAILS TOOL_PICKED TOOL_CHECKED [ACTIVATES]
           install() {
-            mkdir -p "$WORK/$1"
-            PATH="$WORK/bin:$PATH" STATE="$WORK/$1" FAILS="$2" SCAN_PULL_DELAY=1 SCAN_WORK_DIR="$WORK/$1" \
-              GITHUB_OUTPUT=/dev/null TOOL_VERSION=0.14.0 TOOL_PICKED="$3" TOOL_CHECKED=false CATEGORY="$1" \
-              bash scripts/install-scan-tool.sh > "$WORK/$1.log"
+            mkdir -p "$WORK/$1/home" "$WORK/$1/tools"
+            : > "$WORK/$1/pulls"
+            PATH="$WORK/bin:$PATH" HOME="$WORK/$1/home" RUNNER_TEMP="$WORK/$1/tools" STATE="$WORK/$1" FAILS="$2" \
+              ACTIVATES="${5:-true}" SCAN_PULL_DELAY=0 SCAN_WORK_DIR="$WORK/$1" GITHUB_OUTPUT=/dev/null TOOL_VERSION=0.14.0 \
+              TOOL_PICKED="$3" TOOL_CHECKED="$4" CATEGORY="$1" bash scripts/install-scan-tool.sh > "$WORK/$1.log"
           }
           pulls() { wc -l < "$WORK/$1/pulls" | tr -d ' '; }
-          install picked 2 true || fail "A picked version must be installed after two failed pulls: $(cat "$WORK/picked.log")"
+          # Usage: expect_failure NAME PULLS TEXT
+          expect_failure() {
+            [ "$(pulls "$1")" = "$2" ] || fail "$1: expected $2 pulls, got $(pulls "$1")"
+            grep -qF "$3" "$WORK/$1.log" || fail "$1: expected '$3' in the error: $(cat "$WORK/$1.log")"
+          }
+
+          install picked 2 true false || fail "A picked version must be installed after two failed pulls: $(cat "$WORK/picked.log")"
           [ "$(pulls picked)" = 3 ] || fail "Expected 3 pulls of the picked version, got $(pulls picked)"
-          ! install unknown 2 false || fail "An unchecked version must not be pulled again"
-          [ "$(pulls unknown)" = 1 ] || fail "Expected 1 pull of the unchecked version, got $(pulls unknown)"
-          ! install unavailable 9 true || fail "The install must fail when every pull fails"
-          [ "$(pulls unavailable)" = 5 ] || fail "Expected 5 pulls, got $(pulls unavailable)"
+          # Central could not say which Ballerina the pinned version needs, as when it rate limits.
+          install unchecked 2 false false || fail "An unchecked version must be pulled again: $(cat "$WORK/unchecked.log")"
+          [ "$(pulls unchecked)" = 3 ] || fail "Expected 3 pulls of the unchecked version, got $(pulls unchecked)"
+          # Central said which Ballerina the pinned version needs, from the cache resolve-versions.sh wrote.
+          mkdir -p "$WORK/checked/tools/scan-ballerina-tools"
+          printf 2201.13.0 > "$WORK/checked/tools/scan-ballerina-tools/ballerina-for-scan-tool-0.14.0"
+          install checked 2 false true || fail "A checked version must be pulled again: $(cat "$WORK/checked.log")"
+          [ "$(pulls checked)" = 3 ] || fail "Expected 3 pulls of the checked version, got $(pulls checked)"
+          # Central answered 404 for the version in resolve-versions.sh.
+          mkdir -p "$WORK/missing"
+          : > "$WORK/missing/scan-tool-0.14.0.missing"
+          ! install missing 2 false false || fail "A version Central does not have must fail"
+          expect_failure missing 1 "Check that tool-version names a published version"
+          ! install unavailable 9 true false || fail "The install must fail when every pull fails"
+          expect_failure unavailable 5 "Ballerina Central kept failing"
+          ! install inactive 0 true false false || fail "The install must fail when the version never becomes active"
+          expect_failure inactive 1 "Could not install bal scan 0.14.0"
+
+      # Central answers 404 for a scan tool version it does not have. That, and only that, is recorded.
+      - name: Record a scan tool version Central does not have
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          source scripts/lib.sh
+          export SCAN_WORK_DIR="$RUNNER_TEMP/tool-missing"
+          mkdir -p "$SCAN_WORK_DIR"
+          # Usage: lookup STATUS BODY
+          lookup() {
+            STATUS="$1" BODY="$2"
+            fetch_tool_min_ballerina 0.14.0
+          }
+          central_get() { printf '%s\n%s' "$BODY" "$STATUS"; [ "$STATUS" = 200 ]; }
+          [ "$(lookup 200 '{"ballerinaVersion": "2201.13.2"}')" = 2201.13.0 ] || fail "Expected 2201.13.0 from a found version"
+          ! tool_missing 0.14.0 || fail "A found version must not be recorded as missing"
+          ! lookup 429 '' > /dev/null || fail "A rate limited lookup must fail"
+          ! tool_missing 0.14.0 || fail "A rate limited version must not be recorded as missing"
+          ! lookup 404 '' > /dev/null || fail "A lookup of a missing version must fail"
+          tool_missing 0.14.0 || fail "A version Central answered 404 for must be recorded as missing"
 
       - name: Check the suppressions input and the default branch
         shell: bash
