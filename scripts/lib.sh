@@ -196,6 +196,22 @@ SONAR_PLUGINS="\
 0.3.0 b1e962ecc2e5337d92f7a8043089f40e1f284f2133328835d6c4987322ea98a5
 "
 
+# True when the platform plugin $1 ({kind, value} from sonarqube.json) replaces a sonar.exclusions
+# set in properties file $2 or in the SonarScanner JSON params $3: it passes its own on the command
+# line. Plugin 0.3.0 drops it except on Windows (sonar-ballerina#22). A path or URL is assumed newer.
+sonar_exclusions_replaced() {
+  local kind version
+  [ -n "$(read_property "$2" sonar.exclusions)" ] \
+    || jq -e 'objects | has("sonar.exclusions")' <<< "${3:-}" > /dev/null 2>&1 || return 1
+  kind="$(jq -r '.kind' <<< "$1")"
+  version="$(jq -r '.value' <<< "$1")"
+  [ "$kind" = version ] && [[ "$version" =~ ^[0-9] ]] && ! version_ge "$version" 0.3.1 || return 0
+  case "${RUNNER_OS:-$(uname -s)}" in
+    Windows | MINGW* | MSYS* | CYGWIN*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Prints the SHA-256 of platform plugin version $1, failing when this release does not know it.
 sonar_plugin_sha256() {
   awk -v v="$1" '$1 == v { print $2; found = 1 } END { exit !found }' <<< "$SONAR_PLUGINS"

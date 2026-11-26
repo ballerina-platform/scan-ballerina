@@ -202,6 +202,9 @@ while IFS= read -r unit; do
     # command-line value does not reach SonarScanner on every OS, and bal scan would then run twice.
     user_params="$(jq -c 'objects' <<< "${SONAR_SCANNER_JSON_PARAMS:-}" 2> /dev/null || true)"
     [ -n "$user_params" ] || user_params='{}'
+    if sonar_exclusions_replaced "$(jq -c '.plugin' <<< "$settings")" "$properties_file" "$user_params"; then
+      log_warning "Package '$path' sets sonar.exclusions, but the SonarQube platform plugin sets its own on the SonarScanner command line, which replaces it. To keep findings in those files out of SonarQube, use sonar.issue.ignore.multicriteria instead."
+    fi
     params="$(jq -c \
       --arg settings "$(to_native_path "$properties_file")" \
       --arg results "$(to_native_path "$ROOT/$path/ballerina-static-code-analysis-results.json")" \
