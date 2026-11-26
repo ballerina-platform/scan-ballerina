@@ -336,11 +336,13 @@ jobs:
           [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
           bal version | grep -q '^Ballerina 2201\.13\.0 ' || fail "Ballerina 2201.13.0 is not the installed version"
 
-      # The version Central picks is already pulled, but another version is active, so the pick
-      # must be made active again.
+      # 'bal tool use' forces another version active, which a later pull of the version Central
+      # picks does not replace, so the pick must still be made active.
       - name: Make another scan tool version active
         shell: bash
-        run: bal tool pull scan:0.11.0
+        run: |
+          bal tool pull scan:0.11.0
+          bal tool use scan:0.11.0
 
       - name: Scan with the latest compatible scan tool
         id: pulled-pick
@@ -357,10 +359,13 @@ jobs:
         run: |
           set -euo pipefail
           fail() { echo "::error::$1"; exit 1; }
+          at_least() { [ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]; }
           [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
-          [ "$(bash .github/scripts/active-scan-tool.sh)" = 0.13.0 ] || fail "bal scan 0.13.0 is not the active tool version"
-          [ "$(cat "$RUNNER_TEMP/scan-ballerina-tools/scan-tool-for-ballerina-2201.13.2")" = 0.13.0 ] \
+          PICKED="$(cat "$RUNNER_TEMP/scan-ballerina-tools/scan-tool-for-ballerina-2201.13.2")" \
             || fail "The version Central picked was not kept in the tool cache"
+          at_least "$PICKED" 0.13.0 || fail "Central picked bal scan $PICKED, expected 0.13.0 or later"
+          ACTIVE="$(bash .github/scripts/active-scan-tool.sh)"
+          [ "$ACTIVE" = "$PICKED" ] || fail "bal scan $ACTIVE is active, expected $PICKED, the version Central picked"
 
   # With both versions empty, a Ballerina on the path that runs only bal scan 0.11.x is replaced.
   empty-versions-old-bal:
