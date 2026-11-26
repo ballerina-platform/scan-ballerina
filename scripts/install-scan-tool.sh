@@ -56,6 +56,11 @@ if [ "$ACTIVE" != "$WANTED" ]; then
     bal_cmd tool pull "scan:$WANTED" || true
     ACTIVE="$(active_tool_version)"
   fi
+  # A pull does not replace a version an earlier 'bal tool use' made active, but a use now can.
+  if [ "$ACTIVE" != "$WANTED" ]; then
+    bal_cmd tool use "scan:$WANTED" || true
+    ACTIVE="$(active_tool_version)"
+  fi
   echo "::endgroup::"
   [ "$ACTIVE" = "$WANTED" ] || die "Could not install bal scan $WANTED for Ballerina $BAL_VERSION (active version: ${ACTIVE:-none}). $HINT"
 fi
