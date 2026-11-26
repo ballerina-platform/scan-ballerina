@@ -90,6 +90,23 @@ jobs:
           FILES="$(jq -c '[.[].file]' "$WORK/findings.json")"
           [ "$FILES" = '["pkg/main.bal"]' ] || fail "Expected the finding in pkg/main.bal only, got $FILES"
 
+      # GitHub shows the CWE and the tags of a rule in the alert's sidebar, so the help of a rule
+      # that has none of its own names only its OWASP Top 10 categories.
+      - name: Write the help of a rule with CWE, OWASP and other tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          HELP="$(jq -n '{version: "2.1.0", runs: [{
+            tool: {driver: {name: "Ballerina Scan Tool", semanticVersion: "0.14.0", rules: [{
+              id: "ballerina/http:1", shortDescription: {text: "Avoid it"}, helpUri: "https://example.com/rule",
+              properties: {ruleKind: "VULNERABILITY", tags: ["external/cwe/cwe-079", "external/owasp/owasp-a05-2025", "injection"]}}]}},
+            results: []}]}' | jq -s -r -f scripts/merge-sarif.jq | jq -r '.runs[0].tool.driver.rules[0].help.markdown')"
+          EXPECTED="$(printf '%s\n' 'Avoid it' '' '- **Rule:** `ballerina/http:1`' '- **Type:** Vulnerability' \
+            '- **OWASP Top 10:** [A05:2025 – Injection](https://top10.owasp.org/2025/A05_2025-Injection/)' '' \
+            '[Rule documentation](https://example.com/rule)')"
+          [ "$HELP" = "$EXPECTED" ] || fail "Unexpected rule help: $HELP"
+
       # test/sarif/suppressed holds a package whose results are suppressed as accepted, with and
       # without a status, under review, or not at all (an empty array), and a package that sets no
       # suppressions.

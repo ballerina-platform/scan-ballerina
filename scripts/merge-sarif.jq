@@ -19,10 +19,6 @@ def owasp_2025: {
 
 def rule_kinds: {"VULNERABILITY": "Vulnerability", "CODE_SMELL": "Code smell", "BUG": "Bug"};
 
-def cwe_links:
-  [.properties.tags[]? | capture("^external/cwe/cwe-0*(?<id>[0-9]+)$")
-    | "[CWE-\(.id)](https://cwe.mitre.org/data/definitions/\(.id).html)"];
-
 def owasp_links:
   [.properties.tags[]? | capture("^external/owasp/owasp-(?<cat>a[0-9]{2})-(?<year>[0-9]{4})$")
     | (.cat | ascii_upcase) as $cat
@@ -30,18 +26,13 @@ def owasp_links:
         "[\($cat):2025 – \(owasp_2025[$cat])](https://top10.owasp.org/2025/\($cat)_2025-\(owasp_2025[$cat] | gsub(" "; "_"))/)"
       else "\($cat):\(.year)" end];
 
-def plain_tags:
-  [.properties.tags[]? | select(startswith("external/") or . == "security" or . == "maintainability" | not) | "`\(.)`"];
-
 def help_markdown($desc):
   [
     $desc,
     "",
     "- **Rule:** `\(.id)`",
     (rule_kinds[.properties.ruleKind // ""] // empty | "- **Type:** \(.)"),
-    (cwe_links | select(length > 0) | "- **CWE:** \(join(", "))"),
     (owasp_links | select(length > 0) | "- **OWASP Top 10:** \(join(", "))"),
-    (plain_tags | select(length > 0) | "- **Tags:** \(join(" "))"),
     (.helpUri // empty | "", "[Rule documentation](\(.))")
   ] | join("\n");
 
