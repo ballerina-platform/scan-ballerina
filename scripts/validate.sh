@@ -247,7 +247,7 @@ elif selected sonarqube; then
   while IFS=$'\t' read -r where v; do
     [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || continue
     version_ge "$v" "$MIN_SONAR_PLUGIN_VERSION" \
-      || error "$where.plugin-version is $v, but the oldest supported version is $MIN_SONAR_PLUGIN_VERSION. Set $MIN_SONAR_PLUGIN_VERSION or later, or leave it out to use the newest plugin that works with the scan tool."
+      || error "$where.plugin-version is $v, but the oldest supported version is $MIN_SONAR_PLUGIN_VERSION. Set $MIN_SONAR_PLUGIN_VERSION or later, or leave it out to use the default version $DEFAULT_SONAR_PLUGIN_VERSION."
   done < <(jq -r '.sonarqube // {} | select(type == "object")
     | (["platform-config.sonarqube", ."plugin-version"]),
       (.packages // [] | select(type == "array") | to_entries[] | select(.value | type == "object")

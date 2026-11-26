@@ -656,11 +656,11 @@ jobs:
             [ "$(known_tool_min_ballerina "${pair%%:*}")" = "${pair#*:}" ] \
               || fail "bal scan ${pair%%:*} must need Ballerina ${pair#*:}, got $(known_tool_min_ballerina "${pair%%:*}")"
           done
-          for pair in 0.3.0:0.11.1:supported 0.3.0:0.13.0:supported 0.3.0:0.11.0:too-old 0.3.0:0.14.0:untested; do
-            IFS=: read -r plugin tool expected <<< "$pair"
-            [ "$(sonar_plugin_support "$plugin" "$tool")" = "$expected" ] \
-              || fail "Plugin $plugin with bal scan $tool must be $expected, got $(sonar_plugin_support "$plugin" "$tool")"
+          [ "$DEFAULT_SONAR_PLUGIN_VERSION" = 0.4.0 ] || fail "The default plugin is $DEFAULT_SONAR_PLUGIN_VERSION"
+          for v in 0.4.0 0.3.1 0.3.0; do
+            [[ "$(sonar_plugin_sha256 "$v")" =~ ^[0-9a-f]{64}$ ]] || fail "Plugin $v must have a pinned SHA-256"
           done
+          ! sonar_plugin_sha256 0.2.0 > /dev/null || fail "Plugin 0.2.0 must have no pinned SHA-256"
 
       - name: Check the unsupported tool-version error
         shell: bash

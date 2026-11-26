@@ -186,51 +186,19 @@ fetch_latest_ballerina_version() {
 MIN_SONAR_PLUGIN_VERSION="0.3.0"
 SONAR_PLUGIN_URL="https://maven.pkg.github.com/ballerina-platform/sonar-ballerina/io/ballerina/sonar/sonar-platform-plugin/{version}/sonar-platform-plugin-{version}.jar"
 
-# Known plugin versions, newest first: version, oldest scan tool it works with, first scan tool it
-# is not known to work with, and the SHA-256 a download must match. 0.13.0 keeps the platform API
-# of 0.12.0 that plugin 0.3.0 was built against.
+# The plugin version used when none is given. It works with both supported scan tool lines.
+DEFAULT_SONAR_PLUGIN_VERSION="0.4.0"
+
+# Known plugin versions, newest first, and the SHA-256 a download must match.
 SONAR_PLUGINS="\
-0.3.0 0.11.1 0.14.0 b1e962ecc2e5337d92f7a8043089f40e1f284f2133328835d6c4987322ea98a5
+0.4.0 7d0502ab66443f702c0e8a3e0b2a7a5c92a36f520eb772ea247475bf8d27a266
+0.3.1 960eb1fb237864c6044be59ade5d10484881cbf78f328ae3df1756830d9cb1f6
+0.3.0 b1e962ecc2e5337d92f7a8043089f40e1f284f2133328835d6c4987322ea98a5
 "
 
 # Prints the SHA-256 of platform plugin version $1, failing when this release does not know it.
 sonar_plugin_sha256() {
-  awk -v v="$1" '$1 == v { print $4; found = 1 } END { exit !found }' <<< "$SONAR_PLUGINS"
-}
-
-# Prints whether plugin version $1 works with scan tool version $2: supported, too-old (the tool is
-# older than the plugin needs), untested (newer than it is known to work with) or unknown.
-sonar_plugin_support() {
-  local plugin tool below
-  while read -r plugin tool below _; do
-    [ "$plugin" = "$1" ] || continue
-    if ! version_ge "$2" "$tool"; then
-      echo too-old
-    elif version_ge "$2" "$below"; then
-      echo untested
-    else
-      echo supported
-    fi
-    return
-  done <<< "$SONAR_PLUGINS"
-  echo unknown
-}
-
-# Prints the newest known plugin version that works with scan tool version $1, if any.
-sonar_plugin_for_tool() {
-  local plugin
-  while read -r plugin _; do
-    [ -n "$plugin" ] || continue
-    if [ "$(sonar_plugin_support "$plugin" "$1")" = supported ]; then
-      printf '%s' "$plugin"
-      return
-    fi
-  done <<< "$SONAR_PLUGINS"
-}
-
-# Prints the newest platform plugin version this release knows.
-newest_sonar_plugin() {
-  awk 'NF { print $1; exit }' <<< "$SONAR_PLUGINS"
+  awk -v v="$1" '$1 == v { print $2; found = 1 } END { exit !found }' <<< "$SONAR_PLUGINS"
 }
 
 # The SonarScanner CLI an action release pins, with the SHA-256 of each distribution. Each one
