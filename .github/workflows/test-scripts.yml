@@ -679,6 +679,44 @@ jobs:
               || fail "tool-version $v must be accepted: $(cat "$WORK/$v.log")"
           done
 
+      # A fake bal fails the first $FAILS pulls, as Ballerina Central does when it rate limits. A
+      # version Central has said is published is pulled again, and any other version only once.
+      - name: Retry a failed scan tool pull
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          WORK="$RUNNER_TEMP/pull-retry"
+          mkdir -p "$WORK/bin"
+          cat > "$WORK/bin/bal" << 'EOF'
+          #!/usr/bin/env bash
+          case "$1 $2" in
+            "version "*) echo "Ballerina 2201.13.2 (Swan Lake Update 13)" ;;
+            "tool list") [ ! -s "$STATE/active" ] || echo "|scan |$(cat "$STATE/active") * |" ;;
+            "tool use") [ ! -e "$STATE/pulled" ] || echo "${3#scan:}" > "$STATE/active" ;;
+            "tool pull")
+              echo x >> "$STATE/pulls"
+              [ "$(wc -l < "$STATE/pulls")" -gt "$FAILS" ] || exit 1
+              : > "$STATE/pulled"
+              echo "${3#scan:}" > "$STATE/active" ;;
+          esac
+          EOF
+          chmod +x "$WORK/bin/bal"
+          # Usage: install NAME FAILS TOOL_PICKED
+          install() {
+            mkdir -p "$WORK/$1"
+            PATH="$WORK/bin:$PATH" STATE="$WORK/$1" FAILS="$2" SCAN_PULL_DELAY=1 SCAN_WORK_DIR="$WORK/$1" \
+              GITHUB_OUTPUT=/dev/null TOOL_VERSION=0.14.0 TOOL_PICKED="$3" TOOL_CHECKED=false CATEGORY="$1" \
+              bash scripts/install-scan-tool.sh > "$WORK/$1.log"
+          }
+          pulls() { wc -l < "$WORK/$1/pulls" | tr -d ' '; }
+          install picked 2 true || fail "A picked version must be installed after two failed pulls: $(cat "$WORK/picked.log")"
+          [ "$(pulls picked)" = 3 ] || fail "Expected 3 pulls of the picked version, got $(pulls picked)"
+          ! install unknown 2 false || fail "An unchecked version must not be pulled again"
+          [ "$(pulls unknown)" = 1 ] || fail "Expected 1 pull of the unchecked version, got $(pulls unknown)"
+          ! install unavailable 9 true || fail "The install must fail when every pull fails"
+          [ "$(pulls unavailable)" = 5 ] || fail "Expected 5 pulls, got $(pulls unavailable)"
+
       - name: Check the suppressions input and the default branch
         shell: bash
         run: |

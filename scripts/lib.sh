@@ -88,9 +88,10 @@ cached_latest_version() {
   cached_version "${RUNNER_TEMP:+$1}" "${@:2}"
 }
 
-# A Central API call is small, so it also has an overall timeout.
+# A Central API call is small, so it also has a timeout for each attempt. Central answers HTTP 429
+# when many jobs start together, so the retries back off for up to three minutes.
 central_get() {
-  curl "${CURL_OPTS[@]}" --max-time 30 "$@"
+  curl "${CURL_OPTS[@]}" --max-time 30 --retry 6 --retry-max-time 180 "$@"
 }
 
 # A GitHub API call with GITHUB_TOKEN. A POST passes --retry 0, since a retry after a lost
