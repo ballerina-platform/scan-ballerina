@@ -90,8 +90,8 @@ jobs:
           FILES="$(jq -c '[.[].file]' "$WORK/findings.json")"
           [ "$FILES" = '["pkg/main.bal"]' ] || fail "Expected the finding in pkg/main.bal only, got $FILES"
 
-      # GitHub shows the CWE and the tags of a rule in the alert's sidebar, so the help of a rule
-      # that has none of its own names only its OWASP Top 10 categories.
+      # GitHub shows a rule's CWE and tags in the alert's sidebar, so the help written for a rule
+      # without help of its own leaves them out and keeps only the OWASP Top 10 line among the tags.
       - name: Write the help of a rule with CWE, OWASP and other tags
         shell: bash
         run: |
