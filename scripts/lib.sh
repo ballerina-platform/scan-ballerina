@@ -88,15 +88,16 @@ cached_latest_version() {
   cached_version "${RUNNER_TEMP:+$1}" "${@:2}"
 }
 
-# A Central API call is small, so it also has an overall timeout.
+# A Central API call is small, so it also has a timeout for each attempt. Central answers HTTP 429
+# when many jobs start together, so the retries back off until three minutes have passed.
 central_get() {
-  curl "${CURL_OPTS[@]}" --max-time 30 "$@"
+  curl "${CURL_OPTS[@]}" --max-time 30 --retry 8 --retry-max-time 180 "$@"
 }
 
 # A GitHub API call with GITHUB_TOKEN. A POST passes --retry 0, since a retry after a lost
 # response would create the item twice.
 gh_api() {
-  central_get -H "Authorization: Bearer ${GITHUB_TOKEN:?GITHUB_TOKEN is not set}" \
+  curl "${CURL_OPTS[@]}" --max-time 30 -H "Authorization: Bearer ${GITHUB_TOKEN:?GITHUB_TOKEN is not set}" \
     -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "$@"
 }
 
@@ -155,9 +156,20 @@ tool_min_ballerina() {
     printf '%s' "$central"
   fi
 }
+# Central answers 404 for a version it does not have, which is recorded for tool_missing.
 fetch_tool_min_ballerina() {
-  central_get "$CENTRAL_SCAN_TOOL_VERSIONS_URL/$1" \
+  local response
+  if ! response="$(central_get -w '\n%{http_code}' "$CENTRAL_SCAN_TOOL_VERSIONS_URL/$1")"; then
+    [ "${response##*$'\n'}" != 404 ] || [ -z "${SCAN_WORK_DIR:-}" ] || : > "$SCAN_WORK_DIR/scan-tool-$1.missing"
+    return 1
+  fi
+  sed '$d' <<< "$response" \
     | jq -r '.ballerinaVersion // empty | capture("^(?<update>[0-9]+\\.[0-9]+)\\.").update + ".0"'
+}
+
+# True when Ballerina Central answered, in this run, that it has no scan tool version $1.
+tool_missing() {
+  [ -n "${SCAN_WORK_DIR:-}" ] && [ -e "$SCAN_WORK_DIR/scan-tool-$1.missing" ]
 }
 
 # Prints the oldest Ballerina of the supported scan tool line that version $1 belongs to.
@@ -459,6 +471,11 @@ active_tool_version() {
         else if (first == "") first = v
       }
       END { print (active != "" ? active : first) }'
+}
+
+# True when scan tool version $1 is in the local Central repository, whether or not it is active.
+tool_pulled() {
+  [ -d "$HOME/.ballerina/repositories/central.ballerina.io/bala/ballerina/tool_scan/$1" ]
 }
 
 # Removes the Ballerina distributions installed from .deb packages. Each version is its own package

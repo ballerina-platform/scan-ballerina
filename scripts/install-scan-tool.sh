@@ -23,6 +23,12 @@ ACTIVE="$(active_tool_version)"
 HINT="Check that tool-version names a published version that supports Ballerina $BAL_VERSION: a scan tool runs on the Ballerina update it was built with and later ones. Leave tool-version empty to use the latest compatible version."
 PICKED_HINT="Ballerina Central picked it as the latest version compatible with Ballerina $BAL_VERSION. Set tool-version to install a given version."
 [ "${TOOL_PICKED:-false}" != true ] || HINT="$PICKED_HINT"
+# A failed 'bal tool pull' is retried with backoff, since Central rate limits jobs that start
+# together, unless Central answered that it has no such version: a mistyped tool-version fails at once.
+PULL_ATTEMPTS=5
+PULL_DELAY="${SCAN_PULL_DELAY:-10}"
+[[ "$PULL_DELAY" =~ ^[0-9]+$ ]] || PULL_DELAY=10
+RATE_LIMIT_HINT="Ballerina Central kept failing, which is likely rate limiting when many jobs start together. Re-run the job."
 # resolve-versions.sh already asked Central which Ballerina a resolved scan tool needs.
 CHECKED="${TOOL_CHECKED:-true}"
 [ -n "$WANTED" ] || CHECKED=true
@@ -52,16 +58,26 @@ if [ "$ACTIVE" != "$WANTED" ]; then
   # reliable on every runner, so the active version decides.
   bal_cmd tool use "scan:$WANTED" || true
   ACTIVE="$(active_tool_version)"
-  if [ "$ACTIVE" != "$WANTED" ]; then
+  attempt=1
+  RETRY=true
+  ! tool_missing "$WANTED" || RETRY=false
+  while [ "$ACTIVE" != "$WANTED" ]; do
     bal_cmd tool pull "scan:$WANTED" || true
     ACTIVE="$(active_tool_version)"
-  fi
-  # A pull does not replace a version an earlier 'bal tool use' made active, but a use now can.
-  if [ "$ACTIVE" != "$WANTED" ]; then
-    bal_cmd tool use "scan:$WANTED" || true
-    ACTIVE="$(active_tool_version)"
-  fi
+    # A pull does not replace a version an earlier 'bal tool use' made active, but a use now can.
+    if [ "$ACTIVE" != "$WANTED" ]; then
+      bal_cmd tool use "scan:$WANTED" || true
+      ACTIVE="$(active_tool_version)"
+    fi
+    # A version that was pulled but cannot be made active is not fixed by pulling it again.
+    [ "$ACTIVE" != "$WANTED" ] && [ "$RETRY" = true ] && [ "$attempt" -lt "$PULL_ATTEMPTS" ] && ! tool_pulled "$WANTED" || break
+    delay=$((PULL_DELAY * 2 ** (attempt - 1) + RANDOM % (PULL_DELAY + 1)))
+    log_notice "Could not pull bal scan $WANTED, which may be Ballerina Central rate limiting. Retrying in ${delay}s (attempt $((attempt + 1)) of $PULL_ATTEMPTS)."
+    sleep "$delay"
+    attempt=$((attempt + 1))
+  done
   echo "::endgroup::"
+  [ "$attempt" -lt "$PULL_ATTEMPTS" ] || HINT="$RATE_LIMIT_HINT"
   [ "$ACTIVE" = "$WANTED" ] || die "Could not install bal scan $WANTED for Ballerina $BAL_VERSION (active version: ${ACTIVE:-none}). $HINT"
 fi
 
