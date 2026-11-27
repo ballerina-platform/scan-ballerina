@@ -246,7 +246,6 @@ runs:
       shell: bash
       env:
         SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
-        SCAN_TOOL_VERSION: ${{ steps.tool.outputs.tool-version }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
         CATEGORY: ${{ inputs.category }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/install-sonarqube.sh"

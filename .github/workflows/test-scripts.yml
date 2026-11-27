@@ -656,11 +656,37 @@ jobs:
             [ "$(known_tool_min_ballerina "${pair%%:*}")" = "${pair#*:}" ] \
               || fail "bal scan ${pair%%:*} must need Ballerina ${pair#*:}, got $(known_tool_min_ballerina "${pair%%:*}")"
           done
-          for pair in 0.3.0:0.11.1:supported 0.3.0:0.13.0:supported 0.3.0:0.11.0:too-old 0.3.0:0.14.0:untested; do
-            IFS=: read -r plugin tool expected <<< "$pair"
-            [ "$(sonar_plugin_support "$plugin" "$tool")" = "$expected" ] \
-              || fail "Plugin $plugin with bal scan $tool must be $expected, got $(sonar_plugin_support "$plugin" "$tool")"
+          [ "$DEFAULT_SONAR_PLUGIN_VERSION" = 0.4.0 ] || fail "The default plugin is $DEFAULT_SONAR_PLUGIN_VERSION"
+          for v in 0.4.0 0.3.1 0.3.0; do
+            [[ "$(sonar_plugin_sha256 "$v")" =~ ^[0-9a-f]{64}$ ]] || fail "Plugin $v must have a pinned SHA-256"
           done
+          ! sonar_plugin_sha256 0.2.0 > /dev/null || fail "Plugin 0.2.0 must have no pinned SHA-256"
+
+      # The platform plugin passes its own sonar.exclusions to SonarScanner, which replaces the
+      # user's, except plugin 0.3.0 outside Windows, which drops its command-line arguments.
+      - name: Detect a sonar.exclusions the plugin replaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          source scripts/lib.sh
+          WORK="$RUNNER_TEMP/sonar-exclusions"
+          mkdir -p "$WORK"
+          printf '%s\n' 'sonar.projectKey=key' 'sonar.exclusions=generated/**' > "$WORK/excluding.properties"
+          printf '%s\n' 'sonar.projectKey=key' > "$WORK/plain.properties"
+          V040='{"kind": "version", "value": "0.4.0"}'
+          V030='{"kind": "version", "value": "0.3.0"}'
+          URL='{"kind": "url", "value": "https://example.com/plugin.jar"}'
+          sonar_exclusions_replaced "$V040" "$WORK/excluding.properties" '{}' || fail "0.4.0 must replace the properties file's sonar.exclusions"
+          sonar_exclusions_replaced "$V040" "$WORK/plain.properties" '{"sonar.exclusions": "a/**"}' \
+            || fail "0.4.0 must replace sonar.exclusions in the JSON params"
+          sonar_exclusions_replaced "$URL" "" '{"sonar.exclusions": "a/**"}' || fail "A plugin from a URL must be assumed to replace it"
+          ! sonar_exclusions_replaced "$V040" "$WORK/plain.properties" '{"sonar.projectKey": "k"}' \
+            || fail "Nothing is replaced when sonar.exclusions is not set"
+          ! RUNNER_OS=Linux sonar_exclusions_replaced "$V030" "$WORK/excluding.properties" '{}' \
+            || fail "0.3.0 must keep sonar.exclusions on Linux"
+          RUNNER_OS=Windows sonar_exclusions_replaced "$V030" "$WORK/excluding.properties" '{}' \
+            || fail "0.3.0 must replace sonar.exclusions on Windows"
 
       - name: Check the unsupported tool-version error
         shell: bash

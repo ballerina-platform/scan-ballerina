@@ -235,7 +235,7 @@ The fields at the platform level are the defaults for every scanned package. An 
 | Field | Required | Description |
 | --- | --- | --- |
 | `plugin-path` | No | Platform plugin JAR, as a path relative to the repository root or an `https` URL. Overrides `path` in `Scan.toml`. Cannot be used with `plugin-version`. |
-| `plugin-version` | No | Platform plugin version to download, `0.3.0` or later, or `latest` for the latest release. Overrides `path` in `Scan.toml`. A version this release knows, including the one `latest` resolves to, fails when it does not work with the installed scan tool. |
+| `plugin-version` | No | Platform plugin version to download, `0.3.0` or later, or `latest` for the latest release. Overrides `path` in `Scan.toml`. Empty, with no `plugin-path` or `Scan.toml` path, uses `0.4.0`. A version this release knows, including the one `latest` resolves to, must match the SHA-256 it pins. |
 | `properties-file` | No | Properties file, relative to the repository root. Overrides `sonarProjectPropertiesPath` in `Scan.toml`. |
 | `host-url` | Yes, unless set under `packages` or in the properties file | SonarQube server URL. Must be `https`. Overrides `sonar.host.url`. |
 | `token` | Yes, unless set under `packages` | Token for submitting analyses. Pass it from a secret. |
@@ -291,7 +291,7 @@ A result without a `level` takes its rule's default level, and `warning` when th
 
 ## Versions
 
-Ballerina and the scan tool are resolved together, and then the SonarQube platform plugin for the scan tool. Each must be a supported version: Ballerina `2201.12.0` or later, plugin `0.3.0` or later, and `bal scan` from one of two lines:
+Ballerina and the scan tool are resolved together. Each must be a supported version: Ballerina `2201.12.0` or later, plugin `0.3.0` or later, and `bal scan` from one of two lines:
 
 - **`0.13.0` and later**, for Ballerina `2201.13.0` and later.
 - **`0.11.1` and later of `0.11.x`**, for Ballerina `2201.12.x`, which have the in-source suppressions, `--exclude-tests` and platform handling of `0.13.0`. See [Scan tool 0.11](#scan-tool-011).
@@ -310,7 +310,7 @@ Ballerina and the scan tool are resolved together, and then the SonarQube platfo
 
 When Ballerina Central picks a scan tool the action does not support, such as `0.11.0` for Ballerina `2201.12.x` before `0.11.1` is published, the step fails before the scan tool is installed.
 
-An empty `plugin-version`, with no `plugin-path` or `Scan.toml` path, is the newest plugin this release knows to work with the installed scan tool. Plugin `0.3.0` works with both supported lines, `0.11.x` and `0.13.x`.
+An empty `plugin-version`, with no `plugin-path` or `Scan.toml` path, is plugin `0.4.0`, which works with both supported lines, `0.11.x` and `0.13.x`.
 
 ## Scan tool 0.11
 
